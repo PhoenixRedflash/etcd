@@ -16,18 +16,17 @@ package common
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"go.etcd.io/etcd/tests/v3/framework/config"
 	"go.etcd.io/etcd/tests/v3/framework/testutils"
 )
 
 func TestCompact(t *testing.T) {
-
 	testRunner.BeforeTest(t)
 	tcs := []struct {
 		name    string
@@ -50,42 +49,24 @@ func TestCompact(t *testing.T) {
 			defer clus.Close()
 			cc := testutils.MustClient(clus.Client())
 			testutils.ExecuteUntil(ctx, t, func() {
-				var kvs = []testutils.KV{{Key: "key", Val: "val1"}, {Key: "key", Val: "val2"}, {Key: "key", Val: "val3"}}
+				kvs := []testutils.KV{{Key: "key", Val: "val1"}, {Key: "key", Val: "val2"}, {Key: "key", Val: "val3"}}
 				for i := range kvs {
-					if err := cc.Put(ctx, kvs[i].Key, kvs[i].Val, config.PutOptions{}); err != nil {
-						t.Fatalf("compactTest #%d: put kv error (%v)", i, err)
-					}
+					require.NoErrorf(t, cc.Put(ctx, kvs[i].Key, kvs[i].Val, config.PutOptions{}), "compactTest #%d: put kv error", i)
 				}
 				get, err := cc.Get(ctx, "key", config.GetOptions{Revision: 3})
-				if err != nil {
-					t.Fatalf("compactTest: Get kv by revision error (%v)", err)
-				}
+				require.NoErrorf(t, err, "compactTest: Get kv by revision error")
 
 				getkvs := testutils.KeyValuesFromGetResponse(get)
 				assert.Equal(t, kvs[1:2], getkvs)
 
 				_, err = cc.Compact(ctx, 4, tc.options)
-				if err != nil {
-					t.Fatalf("compactTest: Compact error (%v)", err)
-				}
+				require.NoErrorf(t, err, "compactTest: Compact error")
 
-				get, err = cc.Get(ctx, "key", config.GetOptions{Revision: 3})
-				if err != nil {
-					if !strings.Contains(err.Error(), "required revision has been compacted") {
-						t.Fatalf("compactTest: Get compact key error (%v)", err)
-					}
-				} else {
-					t.Fatalf("expected '...has been compacted' error, got <nil>")
-				}
+				_, err = cc.Get(ctx, "key", config.GetOptions{Revision: 3})
+				require.ErrorContainsf(t, err, "required revision has been compacted", "compactTest: Get compact key error (%v)", err)
 
 				_, err = cc.Compact(ctx, 2, tc.options)
-				if err != nil {
-					if !strings.Contains(err.Error(), "required revision has been compacted") {
-						t.Fatal(err)
-					}
-				} else {
-					t.Fatalf("expected '...has been compacted' error, got <nil>")
-				}
+				require.ErrorContains(t, err, "required revision has been compacted")
 			})
 		})
 	}

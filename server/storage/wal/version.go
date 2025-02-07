@@ -23,9 +23,8 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
 
-	"go.etcd.io/etcd/api/v3/version"
-
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/version"
 	"go.etcd.io/etcd/pkg/v3/pbutil"
 	"go.etcd.io/raft/v3/raftpb"
 )
@@ -113,8 +112,8 @@ func visitEntryData(entryType raftpb.EntryType, data []byte, visitor Visitor) er
 			break
 		}
 		msg = proto.MessageReflect(&raftReq)
-		if raftReq.ClusterVersionSet != nil {
-			ver, err := semver.NewVersion(raftReq.ClusterVersionSet.Ver)
+		if raftReq.DowngradeVersionTest != nil {
+			ver, err := semver.NewVersion(raftReq.DowngradeVersionTest.Ver)
 			if err != nil {
 				return err
 			}
@@ -161,7 +160,7 @@ func visitMessageDescriptor(md protoreflect.MessageDescriptor, visitor Visitor) 
 
 	enums := md.Enums()
 	for i := 0; i < enums.Len(); i++ {
-		err := visitEnumDescriptor(enums.Get(i), visitor)
+		err = visitEnumDescriptor(enums.Get(i), visitor)
 		if err != nil {
 			return err
 		}
@@ -188,10 +187,7 @@ func visitMessage(m protoreflect.Message, visitor Visitor) error {
 		case protoreflect.EnumNumber:
 			err = visitEnumNumber(fd.Enum(), m, visitor)
 		}
-		if err != nil {
-			return false
-		}
-		return true
+		return err == nil
 	})
 	return err
 }
@@ -244,7 +240,7 @@ func visitDescriptor(md protoreflect.Descriptor, visitor Visitor) error {
 	}
 	ver, err := etcdVersionFromOptionsString(opts.String())
 	if err != nil {
-		return fmt.Errorf("%s: %s", md.FullName(), err)
+		return fmt.Errorf("%s: %w", md.FullName(), err)
 	}
 	return visitor(md.FullName(), ver)
 }

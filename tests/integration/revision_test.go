@@ -23,12 +23,15 @@ import (
 	"testing"
 	"time"
 
-	"go.etcd.io/etcd/tests/v3/framework/integration"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/status"
+
+	"go.etcd.io/etcd/tests/v3/framework/integration"
 )
 
 func TestRevisionMonotonicWithLeaderPartitions(t *testing.T) {
-	testRevisionMonotonicWithFailures(t, 11*time.Second, func(clus *integration.Cluster) {
+	testRevisionMonotonicWithFailures(t, 12*time.Second, func(clus *integration.Cluster) {
 		for i := 0; i < 5; i++ {
 			leader := clus.WaitLeader(t)
 			time.Sleep(time.Second)
@@ -86,7 +89,7 @@ func testRevisionMonotonicWithFailures(t *testing.T, testDuration time.Duration,
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			putWorker(t, ctx, clus)
+			putWorker(ctx, t, clus)
 		}()
 	}
 
@@ -94,7 +97,7 @@ func testRevisionMonotonicWithFailures(t *testing.T, testDuration time.Duration,
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			getWorker(t, ctx, clus)
+			getWorker(ctx, t, clus) //nolint:testifylint
 		}()
 	}
 
@@ -102,26 +105,22 @@ func testRevisionMonotonicWithFailures(t *testing.T, testDuration time.Duration,
 	wg.Wait()
 	kv := clus.Client(0)
 	resp, err := kv.Get(context.Background(), "foo")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	t.Logf("Revision %d", resp.Header.Revision)
 }
 
-func putWorker(t *testing.T, ctx context.Context, clus *integration.Cluster) {
+func putWorker(ctx context.Context, t *testing.T, clus *integration.Cluster) {
 	for i := 0; ; i++ {
 		kv := clus.Client(i % 3)
 		_, err := kv.Put(ctx, "foo", fmt.Sprintf("%d", i))
 		if errors.Is(err, context.DeadlineExceeded) {
 			return
 		}
-		if silenceConnectionErrors(err) != nil {
-			t.Fatal(err)
-		}
+		assert.NoError(t, silenceConnectionErrors(err))
 	}
 }
 
-func getWorker(t *testing.T, ctx context.Context, clus *integration.Cluster) {
+func getWorker(ctx context.Context, t *testing.T, clus *integration.Cluster) {
 	var prevRev int64
 	for i := 0; ; i++ {
 		kv := clus.Client(i % 3)
@@ -129,9 +128,7 @@ func getWorker(t *testing.T, ctx context.Context, clus *integration.Cluster) {
 		if errors.Is(err, context.DeadlineExceeded) {
 			return
 		}
-		if silenceConnectionErrors(err) != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, silenceConnectionErrors(err))
 		if resp == nil {
 			continue
 		}
@@ -148,7 +145,7 @@ func silenceConnectionErrors(err error) error {
 	}
 	s := status.Convert(err)
 	for _, msg := range connectionErrorMessages {
-		if strings.Index(s.Message(), msg) != -1 {
+		if strings.Contains(s.Message(), msg) {
 			return nil
 		}
 	}

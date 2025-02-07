@@ -30,7 +30,7 @@ const (
 	hashStorageMaxSize = 10
 )
 
-func unsafeHashByRev(tx backend.ReadTx, compactRevision, revision int64, keep map[revision]struct{}) (KeyValueHash, error) {
+func unsafeHashByRev(tx backend.UnsafeReader, compactRevision, revision int64, keep map[Revision]struct{}) (KeyValueHash, error) {
 	h := newKVHasher(compactRevision, revision, keep)
 	err := tx.UnsafeForEach(schema.Key, func(k, v []byte) error {
 		h.WriteKeyValue(k, v)
@@ -43,10 +43,10 @@ type kvHasher struct {
 	hash            hash.Hash32
 	compactRevision int64
 	revision        int64
-	keep            map[revision]struct{}
+	keep            map[Revision]struct{}
 }
 
-func newKVHasher(compactRev, rev int64, keep map[revision]struct{}) kvHasher {
+func newKVHasher(compactRev, rev int64, keep map[Revision]struct{}) kvHasher {
 	h := crc32.New(crc32.MakeTable(crc32.Castagnoli))
 	h.Write(schema.Key.Name())
 	return kvHasher{
@@ -58,12 +58,15 @@ func newKVHasher(compactRev, rev int64, keep map[revision]struct{}) kvHasher {
 }
 
 func (h *kvHasher) WriteKeyValue(k, v []byte) {
-	kr := bytesToRev(k)
-	upper := revision{main: h.revision + 1}
+	kr := BytesToRev(k)
+	upper := Revision{Main: h.revision + 1}
 	if !upper.GreaterThan(kr) {
 		return
 	}
-	lower := revision{main: h.compactRevision + 1}
+
+	isTombstone := BytesToBucketKey(k).tombstone
+
+	lower := Revision{Main: h.compactRevision + 1}
 	// skip revisions that are scheduled for deletion
 	// due to compacting; don't skip if there isn't one.
 	if lower.GreaterThan(kr) && len(h.keep) > 0 {
@@ -71,6 +74,17 @@ func (h *kvHasher) WriteKeyValue(k, v []byte) {
 			return
 		}
 	}
+
+	// When performing compaction, if the compacted revision is a
+	// tombstone, older versions (<= 3.5.15 or <= 3.4.33) will delete
+	// the tombstone. But newer versions (> 3.5.15 or > 3.4.33) won't
+	// delete it. So we should skip the tombstone in such cases when
+	// computing the hash to ensure that both older and newer versions
+	// can always generate the same hash values.
+	if kr.Main == h.compactRevision && isTombstone {
+		return
+	}
+
 	h.hash.Write(k)
 	h.hash.Write(v)
 }
@@ -86,13 +100,18 @@ type KeyValueHash struct {
 }
 
 type HashStorage interface {
-	// Hash computes the hash of the KV's backend.
+	// Hash computes the hash of the whole backend keyspace,
+	// including key, lease, and other buckets in storage.
+	// This is designed for testing ONLY!
+	// Do not rely on this in production with ongoing transactions,
+	// since Hash operation does not hold MVCC locks.
+	// Use "HashByRev" method instead for "key" bucket consistency checks.
 	Hash() (hash uint32, revision int64, err error)
 
 	// HashByRev computes the hash of all MVCC revisions up to a given revision.
 	HashByRev(rev int64) (hash KeyValueHash, currentRev int64, err error)
 
-	// Store adds hash value in local cache, allowing it can be returned by HashByRev.
+	// Store adds hash value in local cache, allowing it to be returned by HashByRev.
 	Store(valueHash KeyValueHash)
 
 	// Hashes returns list of up to `hashStorageMaxSize` newest previously stored hashes.
@@ -106,7 +125,7 @@ type hashStorage struct {
 	lg     *zap.Logger
 }
 
-func newHashStorage(lg *zap.Logger, s *store) *hashStorage {
+func NewHashStorage(lg *zap.Logger, s *store) HashStorage {
 	return &hashStorage{
 		store: s,
 		lg:    lg,
@@ -155,9 +174,7 @@ func (s *hashStorage) Hashes() []KeyValueHash {
 	s.hashMu.RLock()
 	// Copy out hashes under lock just to be safe
 	hashes := make([]KeyValueHash, 0, len(s.hashes))
-	for _, hash := range s.hashes {
-		hashes = append(hashes, hash)
-	}
+	hashes = append(hashes, s.hashes...)
 	s.hashMu.RUnlock()
 	return hashes
 }

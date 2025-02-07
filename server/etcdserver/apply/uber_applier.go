@@ -15,7 +15,7 @@
 package apply
 
 import (
-	"context"
+	"errors"
 	"time"
 
 	"go.uber.org/zap"
@@ -32,7 +32,7 @@ import (
 )
 
 type UberApplier interface {
-	Apply(r *pb.InternalRaftRequest, shouldApplyV3 membership.ShouldApplyV3) *Result
+	Apply(r *pb.InternalRaftRequest) *Result
 }
 
 type uberApplier struct {
@@ -61,15 +61,16 @@ func NewUberApplier(
 	consistentIndex cindex.ConsistentIndexer,
 	warningApplyDuration time.Duration,
 	txnModeWriteWithSharedBuffer bool,
-	quotaBackendBytesCfg int64) UberApplier {
-	applyV3base_ := newApplierV3(lg, be, kv, alarmStore, authStore, lessor, cluster, raftStatus, snapshotServer, consistentIndex, txnModeWriteWithSharedBuffer, quotaBackendBytesCfg)
+	quotaBackendBytesCfg int64,
+) UberApplier {
+	applyV3base := newApplierV3(lg, be, kv, alarmStore, authStore, lessor, cluster, raftStatus, snapshotServer, consistentIndex, txnModeWriteWithSharedBuffer, quotaBackendBytesCfg)
 
 	ua := &uberApplier{
 		lg:                   lg,
 		alarmStore:           alarmStore,
 		warningApplyDuration: warningApplyDuration,
-		applyV3:              applyV3base_,
-		applyV3base:          applyV3base_,
+		applyV3:              applyV3base,
+		applyV3base:          applyV3base,
 	}
 	ua.restoreAlarms()
 	return ua
@@ -87,7 +88,8 @@ func newApplierV3(
 	snapshotServer SnapshotServer,
 	consistentIndex cindex.ConsistentIndexer,
 	txnModeWriteWithSharedBuffer bool,
-	quotaBackendBytesCfg int64) applierV3 {
+	quotaBackendBytesCfg int64,
+) applierV3 {
 	applierBackend := newApplierV3Backend(lg, kv, alarmStore, authStore, lessor, cluster, raftStatus, snapshotServer, consistentIndex, txnModeWriteWithSharedBuffer)
 	return newAuthApplierV3(
 		authStore,
@@ -108,22 +110,22 @@ func (a *uberApplier) restoreAlarms() {
 	}
 }
 
-func (a *uberApplier) Apply(r *pb.InternalRaftRequest, shouldApplyV3 membership.ShouldApplyV3) *Result {
+func (a *uberApplier) Apply(r *pb.InternalRaftRequest) *Result {
 	// We first execute chain of Apply() calls down the hierarchy:
 	// (i.e. CorruptApplier -> CappedApplier -> Auth -> Quota -> Backend),
 	// then dispatch() unpacks the request to a specific method (like Put),
 	// that gets executed down the hierarchy again:
 	// i.e. CorruptApplier.Put(CappedApplier.Put(...(BackendApplier.Put(...)))).
-	return a.applyV3.Apply(context.TODO(), r, shouldApplyV3, a.dispatch)
+	return a.applyV3.Apply(r, a.dispatch)
 }
 
 // dispatch translates the request (r) into appropriate call (like Put) on
 // the underlying applyV3 object.
-func (a *uberApplier) dispatch(ctx context.Context, r *pb.InternalRaftRequest, shouldApplyV3 membership.ShouldApplyV3) *Result {
+func (a *uberApplier) dispatch(r *pb.InternalRaftRequest) *Result {
 	op := "unknown"
 	ar := &Result{}
 	defer func(start time.Time) {
-		success := ar.Err == nil || ar.Err == mvcc.ErrCompacted
+		success := ar.Err == nil || errors.Is(ar.Err, mvcc.ErrCompacted)
 		txn.ApplySecObserve(v3Version, op, success, time.Since(start))
 		txn.WarnOfExpensiveRequest(a.lg, a.warningApplyDuration, start, &pb.InternalRaftStringer{Request: r}, ar.Resp, ar.Err)
 		if !success {
@@ -132,37 +134,18 @@ func (a *uberApplier) dispatch(ctx context.Context, r *pb.InternalRaftRequest, s
 	}(time.Now())
 
 	switch {
-	case r.ClusterVersionSet != nil: // Implemented in 3.5.x
-		op = "ClusterVersionSet"
-		a.applyV3.ClusterVersionSet(r.ClusterVersionSet, shouldApplyV3)
-		return ar
-	case r.ClusterMemberAttrSet != nil:
-		op = "ClusterMemberAttrSet" // Implemented in 3.5.x
-		a.applyV3.ClusterMemberAttrSet(r.ClusterMemberAttrSet, shouldApplyV3)
-		return ar
-	case r.DowngradeInfoSet != nil:
-		op = "DowngradeInfoSet" // Implemented in 3.5.x
-		a.applyV3.DowngradeInfoSet(r.DowngradeInfoSet, shouldApplyV3)
-		return ar
-	}
-
-	if !shouldApplyV3 {
-		return nil
-	}
-
-	switch {
 	case r.Range != nil:
 		op = "Range"
-		ar.Resp, ar.Err = a.applyV3.Range(ctx, nil, r.Range)
+		ar.Resp, ar.Trace, ar.Err = a.applyV3.Range(r.Range)
 	case r.Put != nil:
 		op = "Put"
-		ar.Resp, ar.Trace, ar.Err = a.applyV3.Put(ctx, nil, r.Put)
+		ar.Resp, ar.Trace, ar.Err = a.applyV3.Put(r.Put)
 	case r.DeleteRange != nil:
 		op = "DeleteRange"
-		ar.Resp, ar.Err = a.applyV3.DeleteRange(nil, r.DeleteRange)
+		ar.Resp, ar.Trace, ar.Err = a.applyV3.DeleteRange(r.DeleteRange)
 	case r.Txn != nil:
 		op = "Txn"
-		ar.Resp, ar.Trace, ar.Err = a.applyV3.Txn(ctx, r.Txn)
+		ar.Resp, ar.Trace, ar.Err = a.applyV3.Txn(r.Txn)
 	case r.Compaction != nil:
 		op = "Compaction"
 		ar.Resp, ar.Physc, ar.Trace, ar.Err = a.applyV3.Compaction(r.Compaction)

@@ -18,11 +18,11 @@ import (
 	goruntime "runtime"
 	"time"
 
-	"go.etcd.io/etcd/api/v3/version"
-	"go.etcd.io/etcd/pkg/v3/runtime"
-
 	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/zap"
+
+	"go.etcd.io/etcd/api/v3/version"
+	"go.etcd.io/etcd/pkg/v3/runtime"
 )
 
 var (
@@ -44,18 +44,13 @@ var (
 		Name:      "leader_changes_seen_total",
 		Help:      "The number of leader changes seen.",
 	})
-	isLearner = prometheus.NewGauge(prometheus.GaugeOpts{
-		Namespace: "etcd",
-		Subsystem: "server",
-		Name:      "is_learner",
-		Help:      "Whether or not this member is a learner. 1 if is, 0 otherwise.",
-	})
-	learnerPromoteFailed = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace: "etcd",
-		Subsystem: "server",
-		Name:      "learner_promote_failures",
-		Help:      "The total number of failed learner promotions (likely learner not ready) while this member is leader.",
-	},
+	learnerPromoteFailed = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "etcd",
+			Subsystem: "server",
+			Name:      "learner_promote_failures",
+			Help:      "The total number of failed learner promotions (likely learner not ready) while this member is leader.",
+		},
 		[]string{"Reason"},
 	)
 	learnerPromoteSucceed = prometheus.NewCounter(prometheus.CounterOpts{
@@ -118,29 +113,33 @@ var (
 		Name:      "lease_expired_total",
 		Help:      "The total number of expired leases.",
 	})
-
-	currentVersion = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: "etcd",
-		Subsystem: "server",
-		Name:      "version",
-		Help:      "Which version is running. 1 for 'server_version' label with current version.",
-	},
-		[]string{"server_version"})
-	currentGoVersion = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: "etcd",
-		Subsystem: "server",
-		Name:      "go_version",
-		Help:      "Which Go version server is running with. 1 for 'server_go_version' label with current version.",
-	},
-		[]string{"server_go_version"})
-	serverID = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: "etcd",
-		Subsystem: "server",
-		Name:      "id",
-		Help:      "Server or member ID in hexadecimal format. 1 for 'server_id' label with current ID.",
-	},
-		[]string{"server_id"})
-
+	currentVersion = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: "etcd",
+			Subsystem: "server",
+			Name:      "version",
+			Help:      "Which version is running. 1 for 'server_version' label with current version.",
+		},
+		[]string{"server_version"},
+	)
+	currentGoVersion = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: "etcd",
+			Subsystem: "server",
+			Name:      "go_version",
+			Help:      "Which Go version server is running with. 1 for 'server_go_version' label with current version.",
+		},
+		[]string{"server_go_version"},
+	)
+	serverID = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: "etcd",
+			Subsystem: "server",
+			Name:      "id",
+			Help:      "Server or member ID in hexadecimal format. 1 for 'server_id' label with current ID.",
+		},
+		[]string{"server_id"},
+	)
 	fdUsed = prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace: "os",
 		Subsystem: "fd",
@@ -171,7 +170,6 @@ func init() {
 	prometheus.MustRegister(currentVersion)
 	prometheus.MustRegister(currentGoVersion)
 	prometheus.MustRegister(serverID)
-	prometheus.MustRegister(isLearner)
 	prometheus.MustRegister(learnerPromoteSucceed)
 	prometheus.MustRegister(learnerPromoteFailed)
 	prometheus.MustRegister(fdUsed)

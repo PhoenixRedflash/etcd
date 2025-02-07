@@ -27,8 +27,9 @@ import (
 )
 
 var (
-	memberPeerURLs string
-	isLearner      bool
+	memberPeerURLs    string
+	isLearner         bool
+	memberConsistency string
 )
 
 // NewMemberCommand returns the cobra command for "member".
@@ -99,6 +100,8 @@ The items in the lists are ID, Status, Name, Peer Addrs, Client Addrs, Is Learne
 
 		Run: memberListCommandFunc,
 	}
+
+	cc.Flags().StringVar(&memberConsistency, "consistency", "l", "Linearizable(l) or Serializable(s)")
 
 	return cc
 }
@@ -185,7 +188,7 @@ func memberRemoveCommandFunc(cmd *cobra.Command, args []string) {
 
 	id, err := strconv.ParseUint(args[0], 16, 64)
 	if err != nil {
-		cobrautl.ExitWithError(cobrautl.ExitBadArgs, fmt.Errorf("bad member ID arg (%v), expecting ID in Hex", err))
+		cobrautl.ExitWithError(cobrautl.ExitBadArgs, fmt.Errorf("bad member ID arg (%w), expecting ID in Hex", err))
 	}
 
 	ctx, cancel := commandCtx(cmd)
@@ -205,7 +208,7 @@ func memberUpdateCommandFunc(cmd *cobra.Command, args []string) {
 
 	id, err := strconv.ParseUint(args[0], 16, 64)
 	if err != nil {
-		cobrautl.ExitWithError(cobrautl.ExitBadArgs, fmt.Errorf("bad member ID arg (%v), expecting ID in Hex", err))
+		cobrautl.ExitWithError(cobrautl.ExitBadArgs, fmt.Errorf("bad member ID arg (%w), expecting ID in Hex", err))
 	}
 
 	if len(memberPeerURLs) == 0 {
@@ -226,8 +229,12 @@ func memberUpdateCommandFunc(cmd *cobra.Command, args []string) {
 
 // memberListCommandFunc executes the "member list" command.
 func memberListCommandFunc(cmd *cobra.Command, args []string) {
+	var opts []clientv3.OpOption
+	if IsSerializable(memberConsistency) {
+		opts = append(opts, clientv3.WithSerializable())
+	}
 	ctx, cancel := commandCtx(cmd)
-	resp, err := mustClientFromCmd(cmd).MemberList(ctx)
+	resp, err := mustClientFromCmd(cmd).MemberList(ctx, opts...)
 	cancel()
 	if err != nil {
 		cobrautl.ExitWithError(cobrautl.ExitError, err)
@@ -244,7 +251,7 @@ func memberPromoteCommandFunc(cmd *cobra.Command, args []string) {
 
 	id, err := strconv.ParseUint(args[0], 16, 64)
 	if err != nil {
-		cobrautl.ExitWithError(cobrautl.ExitBadArgs, fmt.Errorf("bad member ID arg (%v), expecting ID in Hex", err))
+		cobrautl.ExitWithError(cobrautl.ExitBadArgs, fmt.Errorf("bad member ID arg (%w), expecting ID in Hex", err))
 	}
 
 	ctx, cancel := commandCtx(cmd)

@@ -16,11 +16,14 @@ package recipes_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -139,7 +142,7 @@ func testMutexTryLock(t *testing.T, lockers int, chooseClient func() *clientv3.C
 				case <-ctx.Done():
 					t.Errorf("Thread: %v, Context failed: %v", i, err)
 				}
-			} else if err == concurrency.ErrLocked {
+			} else if errors.Is(err, concurrency.ErrLocked) {
 				select {
 				case notlockedC <- m:
 				case <-ctx.Done():
@@ -181,14 +184,10 @@ func TestMutexSessionRelock(t *testing.T) {
 	}
 
 	m := concurrency.NewMutex(session, "test-mutex")
-	if err := m.Lock(context.TODO()); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, m.Lock(context.TODO()))
 
 	m2 := concurrency.NewMutex(session, "test-mutex")
-	if err := m2.Lock(context.TODO()); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, m2.Lock(context.TODO()))
 }
 
 // TestMutexWaitsOnCurrentHolder ensures a mutex is only acquired once all
@@ -210,9 +209,7 @@ func TestMutexWaitsOnCurrentHolder(t *testing.T) {
 	}
 	defer firstOwnerSession.Close()
 	firstOwnerMutex := concurrency.NewMutex(firstOwnerSession, "test-mutex")
-	if err = firstOwnerMutex.Lock(cctx); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, firstOwnerMutex.Lock(cctx))
 
 	victimSession, err := concurrency.NewSession(cli)
 	if err != nil {
@@ -285,9 +282,7 @@ func TestMutexWaitsOnCurrentHolder(t *testing.T) {
 	default:
 	}
 
-	if err := firstOwnerMutex.Unlock(cctx); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, firstOwnerMutex.Unlock(cctx))
 
 	select {
 	case <-newOwnerDonec:

@@ -16,9 +16,10 @@ package common
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -38,9 +39,7 @@ func TestRoleAdd_Simple(t *testing.T) {
 
 			testutils.ExecuteUntil(ctx, t, func() {
 				_, err := cc.RoleAdd(ctx, "root")
-				if err != nil {
-					t.Fatalf("want no error, but got (%v)", err)
-				}
+				require.NoError(t, err)
 			})
 		})
 	}
@@ -55,17 +54,11 @@ func TestRoleAdd_Error(t *testing.T) {
 	cc := testutils.MustClient(clus.Client())
 	testutils.ExecuteUntil(ctx, t, func() {
 		_, err := cc.RoleAdd(ctx, "test-role")
-		if err != nil {
-			t.Fatalf("want no error, but got (%v)", err)
-		}
+		require.NoError(t, err)
 		_, err = cc.RoleAdd(ctx, "test-role")
-		if err == nil || !strings.Contains(err.Error(), rpctypes.ErrRoleAlreadyExist.Error()) {
-			t.Fatalf("want (%v) error, but got (%v)", rpctypes.ErrRoleAlreadyExist, err)
-		}
+		require.ErrorContainsf(t, err, rpctypes.ErrRoleAlreadyExist.Error(), "want (%v) error, but got (%v)", rpctypes.ErrRoleAlreadyExist, err)
 		_, err = cc.RoleAdd(ctx, "")
-		if err == nil || !strings.Contains(err.Error(), rpctypes.ErrRoleEmpty.Error()) {
-			t.Fatalf("want (%v) error, but got (%v)", rpctypes.ErrRoleEmpty, err)
-		}
+		require.ErrorContainsf(t, err, rpctypes.ErrRoleEmpty.Error(), "want (%v) error, but got (%v)", rpctypes.ErrRoleEmpty, err)
 	})
 }
 
@@ -78,23 +71,15 @@ func TestRootRole(t *testing.T) {
 	cc := testutils.MustClient(clus.Client())
 	testutils.ExecuteUntil(ctx, t, func() {
 		_, err := cc.RoleAdd(ctx, "root")
-		if err != nil {
-			t.Fatalf("want no error, but got (%v)", err)
-		}
+		require.NoError(t, err)
 		resp, err := cc.RoleGet(ctx, "root")
-		if err != nil {
-			t.Fatalf("want no error, but got (%v)", err)
-		}
+		require.NoError(t, err)
 		t.Logf("get role resp %+v", resp)
 		// granting to root should be refused by server and a no-op
 		_, err = cc.RoleGrantPermission(ctx, "root", "foo", "", clientv3.PermissionType(clientv3.PermReadWrite))
-		if err != nil {
-			t.Fatalf("want no error, but got (%v)", err)
-		}
+		require.NoError(t, err)
 		resp2, err := cc.RoleGet(ctx, "root")
-		if err != nil {
-			t.Fatalf("want no error, but got (%v)", err)
-		}
+		require.NoError(t, err)
 		t.Logf("get role resp %+v", resp2)
 	})
 }
@@ -108,29 +93,17 @@ func TestRoleGrantRevokePermission(t *testing.T) {
 	cc := testutils.MustClient(clus.Client())
 	testutils.ExecuteUntil(ctx, t, func() {
 		_, err := cc.RoleAdd(ctx, "role1")
-		if err != nil {
-			t.Fatalf("want no error, but got (%v)", err)
-		}
+		require.NoError(t, err)
 		_, err = cc.RoleGrantPermission(ctx, "role1", "bar", "", clientv3.PermissionType(clientv3.PermRead))
-		if err != nil {
-			t.Fatalf("want no error, but got (%v)", err)
-		}
+		require.NoError(t, err)
 		_, err = cc.RoleGrantPermission(ctx, "role1", "bar", "", clientv3.PermissionType(clientv3.PermWrite))
-		if err != nil {
-			t.Fatalf("want no error, but got (%v)", err)
-		}
+		require.NoError(t, err)
 		_, err = cc.RoleGrantPermission(ctx, "role1", "bar", "foo", clientv3.PermissionType(clientv3.PermReadWrite))
-		if err != nil {
-			t.Fatalf("want no error, but got (%v)", err)
-		}
+		require.NoError(t, err)
 		_, err = cc.RoleRevokePermission(ctx, "role1", "foo", "")
-		if err == nil || !strings.Contains(err.Error(), rpctypes.ErrPermissionNotGranted.Error()) {
-			t.Fatalf("want error (%v), but got (%v)", rpctypes.ErrPermissionNotGranted, err)
-		}
+		require.ErrorContainsf(t, err, rpctypes.ErrPermissionNotGranted.Error(), "want error (%v), but got (%v)", rpctypes.ErrPermissionNotGranted, err)
 		_, err = cc.RoleRevokePermission(ctx, "role1", "bar", "foo")
-		if err != nil {
-			t.Fatalf("want no error, but got (%v)", err)
-		}
+		require.NoError(t, err)
 	})
 }
 
@@ -143,12 +116,8 @@ func TestRoleDelete(t *testing.T) {
 	cc := testutils.MustClient(clus.Client())
 	testutils.ExecuteUntil(ctx, t, func() {
 		_, err := cc.RoleAdd(ctx, "role1")
-		if err != nil {
-			t.Fatalf("want no error, but got (%v)", err)
-		}
+		require.NoError(t, err)
 		_, err = cc.RoleDelete(ctx, "role1")
-		if err != nil {
-			t.Fatalf("want no error, but got (%v)", err)
-		}
+		require.NoError(t, err)
 	})
 }

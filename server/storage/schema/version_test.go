@@ -20,10 +20,10 @@ import (
 
 	"github.com/coreos/go-semver/semver"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/zap/zaptest"
 
 	"go.etcd.io/bbolt"
-
 	"go.etcd.io/etcd/server/v3/storage/backend"
 	betesting "go.etcd.io/etcd/server/v3/storage/backend/testing"
 )
@@ -60,9 +60,7 @@ func TestVersion(t *testing.T) {
 			lg := zaptest.NewLogger(t)
 			be, tmpPath := betesting.NewTmpBackend(t, time.Microsecond, 10)
 			tx := be.BatchTx()
-			if tx == nil {
-				t.Fatal("batch tx is nil")
-			}
+			require.NotNilf(t, tx, "batch tx is nil")
 			tx.Lock()
 			tx.UnsafeCreateBucket(Meta)
 			UnsafeSetStorageVersion(tx, semver.New(tc.version))
@@ -106,16 +104,14 @@ func TestVersionSnapshot(t *testing.T) {
 		t.Run(tc.version, func(t *testing.T) {
 			be, tmpPath := betesting.NewTmpBackend(t, time.Microsecond, 10)
 			tx := be.BatchTx()
-			if tx == nil {
-				t.Fatal("batch tx is nil")
-			}
+			require.NotNilf(t, tx, "batch tx is nil")
 			tx.Lock()
 			tx.UnsafeCreateBucket(Meta)
 			UnsafeSetStorageVersion(tx, semver.New(tc.version))
 			tx.Unlock()
 			be.ForceCommit()
 			be.Close()
-			db, err := bbolt.Open(tmpPath, 0400, &bbolt.Options{ReadOnly: true})
+			db, err := bbolt.Open(tmpPath, 0o400, &bbolt.Options{ReadOnly: true})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -130,7 +126,6 @@ func TestVersionSnapshot(t *testing.T) {
 			}
 
 			assert.Equal(t, tc.expectVersion, ver.String())
-
 		})
 	}
 }

@@ -16,7 +16,11 @@ package v3rpc
 
 import (
 	"context"
+	errorspkg "errors"
 	"strings"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
@@ -26,9 +30,6 @@ import (
 	"go.etcd.io/etcd/server/v3/etcdserver/version"
 	"go.etcd.io/etcd/server/v3/lease"
 	"go.etcd.io/etcd/server/v3/storage/mvcc"
-
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 var toGRPCErrorMap = map[error]error{
@@ -95,7 +96,7 @@ var toGRPCErrorMap = map[error]error{
 
 func togRPCError(err error) error {
 	// let gRPC server convert to codes.Canceled, codes.DeadlineExceeded
-	if err == context.Canceled || err == context.DeadlineExceeded {
+	if errorspkg.Is(err, context.Canceled) || errorspkg.Is(err, context.DeadlineExceeded) {
 		return err
 	}
 	grpcErr, ok := toGRPCErrorMap[err]
@@ -138,7 +139,7 @@ func isClientCtxErr(ctxErr error, err error) bool {
 }
 
 // in v3.4, learner is allowed to serve serializable read and endpoint status
-func isRPCSupportedForLearner(req interface{}) bool {
+func isRPCSupportedForLearner(req any) bool {
 	switch r := req.(type) {
 	case *pb.StatusRequest:
 		return true

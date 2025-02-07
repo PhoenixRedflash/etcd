@@ -18,10 +18,10 @@ import (
 	"sync"
 	"time"
 
-	"go.etcd.io/etcd/client/pkg/v3/transport"
-
 	"github.com/cheggaaa/pb/v3"
 	"github.com/spf13/cobra"
+
+	"go.etcd.io/etcd/client/pkg/v3/transport"
 )
 
 // This represents the base command when called without any subcommands
@@ -67,6 +67,7 @@ func init() {
 	RootCmd.PersistentFlags().StringVar(&tls.CertFile, "cert", "", "identify HTTPS client using this SSL certificate file")
 	RootCmd.PersistentFlags().StringVar(&tls.KeyFile, "key", "", "identify HTTPS client using this SSL key file")
 	RootCmd.PersistentFlags().StringVar(&tls.TrustedCAFile, "cacert", "", "verify certificates of HTTPS-enabled servers using this CA bundle")
+	RootCmd.PersistentFlags().BoolVar(&tls.InsecureSkipVerify, "insecure-skip-tls-verify", false, "skip server certificate verification")
 
 	RootCmd.PersistentFlags().StringVar(&user, "user", "", "provide username[:password] and prompt if password is not supplied.")
 	RootCmd.PersistentFlags().DurationVar(&dialTimeout, "dial-timeout", 0, "dial timeout for client connections")

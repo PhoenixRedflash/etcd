@@ -23,9 +23,11 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"go.etcd.io/etcd/api/v3/version"
 	"go.etcd.io/etcd/client/pkg/v3/testutil"
+	"go.etcd.io/etcd/pkg/v3/expect"
 	"go.etcd.io/etcd/pkg/v3/flags"
 	"go.etcd.io/etcd/tests/v3/framework/e2e"
 )
@@ -54,7 +56,7 @@ func TestClusterVersion(t *testing.T) {
 			e2e.BeforeTest(t)
 			cfg := e2e.NewConfig(
 				e2e.WithSnapshotCount(3),
-				e2e.WithBaseScheme("unix"), // to avoid port conflict)
+				e2e.WithBasePeerScheme("unix"), // to avoid port conflict)
 				e2e.WithRollingStart(tt.rollingStart),
 			)
 
@@ -88,7 +90,7 @@ func versionTest(cx ctlCtx) {
 func clusterVersionTest(cx ctlCtx, expected string) {
 	var err error
 	for i := 0; i < 35; i++ {
-		if err = e2e.CURLGet(cx.epc, e2e.CURLReq{Endpoint: "/version", Expected: expected}); err != nil {
+		if err = e2e.CURLGet(cx.epc, e2e.CURLReq{Endpoint: "/version", Expected: expect.ExpectedResponse{Value: expected}}); err != nil {
 			cx.t.Logf("#%d: v3 is not ready yet (%v)", i, err)
 			time.Sleep(200 * time.Millisecond)
 			continue
@@ -102,7 +104,7 @@ func clusterVersionTest(cx ctlCtx, expected string) {
 
 func ctlV3Version(cx ctlCtx) error {
 	cmdArgs := append(cx.PrefixArgs(), "version")
-	return e2e.SpawnWithExpectWithEnv(cmdArgs, cx.envMap, version.Version)
+	return e2e.SpawnWithExpectWithEnv(cmdArgs, cx.envMap, expect.ExpectedResponse{Value: version.Version})
 }
 
 // TestCtlV3DialWithHTTPScheme ensures that client handles Endpoints with HTTPS scheme.
@@ -111,16 +113,13 @@ func TestCtlV3DialWithHTTPScheme(t *testing.T) {
 }
 
 func dialWithSchemeTest(cx ctlCtx) {
-	cmdArgs := append(cx.prefixArgs(cx.epc.EndpointsV3()), "put", "foo", "bar")
-	if err := e2e.SpawnWithExpectWithEnv(cmdArgs, cx.envMap, "OK"); err != nil {
-		cx.t.Fatal(err)
-	}
+	cmdArgs := append(cx.prefixArgs(cx.epc.EndpointsGRPC()), "put", "foo", "bar")
+	require.NoError(cx.t, e2e.SpawnWithExpectWithEnv(cmdArgs, cx.envMap, expect.ExpectedResponse{Value: "OK"}))
 }
 
 type ctlCtx struct {
-	t         *testing.T
-	apiPrefix string
-	cfg       e2e.EtcdProcessClusterConfig
+	t   *testing.T
+	cfg e2e.EtcdProcessClusterConfig
 
 	corruptFunc                func(string) error
 	disableStrictReconfigCheck bool
@@ -158,6 +157,10 @@ func withCfg(cfg e2e.EtcdProcessClusterConfig) ctlOption {
 	return func(cx *ctlCtx) { cx.cfg = cfg }
 }
 
+func withDefaultDialTimeout() ctlOption {
+	return withDialTimeout(0)
+}
+
 func withDialTimeout(timeout time.Duration) ctlOption {
 	return func(cx *ctlCtx) { cx.dialTimeout = timeout }
 }
@@ -182,14 +185,6 @@ func withCorruptFunc(f func(string) error) ctlOption {
 	return func(cx *ctlCtx) { cx.corruptFunc = f }
 }
 
-func withDisableStrictReconfig() ctlOption {
-	return func(cx *ctlCtx) { cx.disableStrictReconfigCheck = true }
-}
-
-func withApiPrefix(p string) ctlOption {
-	return func(cx *ctlCtx) { cx.apiPrefix = p }
-}
-
 func withFlagByEnv() ctlOption {
 	return func(cx *ctlCtx) { cx.envMap = make(map[string]string) }
 }
@@ -198,7 +193,13 @@ func withFlagByEnv() ctlOption {
 // may be overwritten by `withCfg`.
 func withMaxConcurrentStreams(streams uint32) ctlOption {
 	return func(cx *ctlCtx) {
-		cx.cfg.MaxConcurrentStreams = streams
+		cx.cfg.ServerConfig.MaxConcurrentStreams = streams
+	}
+}
+
+func withLogLevel(logLevel string) ctlOption {
+	return func(cx *ctlCtx) {
+		cx.cfg.ServerConfig.LogLevel = logLevel
 	}
 }
 
@@ -223,9 +224,9 @@ func testCtlWithOffline(t *testing.T, testFunc func(ctlCtx), testOfflineFunc fun
 	if !ret.quorum {
 		ret.cfg = *e2e.ConfigStandalone(ret.cfg)
 	}
-	ret.cfg.StrictReconfigCheck = !ret.disableStrictReconfigCheck
+	ret.cfg.ServerConfig.StrictReconfigCheck = !ret.disableStrictReconfigCheck
 	if ret.initialCorruptCheck {
-		ret.cfg.InitialCorruptCheck = ret.initialCorruptCheck
+		ret.cfg.ServerConfig.ExperimentalInitialCorruptCheck = ret.initialCorruptCheck
 	}
 	if testOfflineFunc != nil {
 		ret.cfg.KeepDataDir = true
@@ -331,7 +332,7 @@ func (cx *ctlCtx) prefixArgs(eps []string) []string {
 // PrefixArgs prefixes etcdctl command.
 // Make sure to unset environment variables after tests.
 func (cx *ctlCtx) PrefixArgs() []string {
-	return cx.prefixArgs(cx.epc.EndpointsV3())
+	return cx.prefixArgs(cx.epc.EndpointsGRPC())
 }
 
 // PrefixArgsUtl returns prefix of the command that is etcdutl
@@ -342,25 +343,4 @@ func (cx *ctlCtx) PrefixArgsUtl() []string {
 
 func isGRPCTimedout(err error) bool {
 	return strings.Contains(err.Error(), "grpc: timed out trying to connect")
-}
-
-func (cx *ctlCtx) memberToRemove() (ep string, memberID string, clusterID string) {
-	n1 := cx.cfg.ClusterSize
-	if n1 < 2 {
-		cx.t.Fatalf("%d-node is too small to test 'member remove'", n1)
-	}
-
-	resp, err := getMemberList(*cx)
-	if err != nil {
-		cx.t.Fatal(err)
-	}
-	if n1 != len(resp.Members) {
-		cx.t.Fatalf("expected %d, got %d", n1, len(resp.Members))
-	}
-
-	ep = resp.Members[0].ClientURLs[0]
-	clusterID = fmt.Sprintf("%x", resp.Header.ClusterId)
-	memberID = fmt.Sprintf("%x", resp.Members[1].ID)
-
-	return ep, memberID, clusterID
 }

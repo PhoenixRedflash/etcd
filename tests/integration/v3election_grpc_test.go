@@ -20,6 +20,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
 	epb "go.etcd.io/etcd/server/v3/etcdserver/api/v3election/v3electionpb"
 	"go.etcd.io/etcd/tests/v3/framework/integration"
@@ -33,20 +35,14 @@ func TestV3ElectionCampaign(t *testing.T) {
 	defer clus.Terminate(t)
 
 	lease1, err1 := integration.ToGRPC(clus.RandClient()).Lease.LeaseGrant(context.TODO(), &pb.LeaseGrantRequest{TTL: 30})
-	if err1 != nil {
-		t.Fatal(err1)
-	}
+	require.NoError(t, err1)
 	lease2, err2 := integration.ToGRPC(clus.RandClient()).Lease.LeaseGrant(context.TODO(), &pb.LeaseGrantRequest{TTL: 30})
-	if err2 != nil {
-		t.Fatal(err2)
-	}
+	require.NoError(t, err2)
 
 	lc := integration.ToGRPC(clus.Client(0)).Election
 	req1 := &epb.CampaignRequest{Name: []byte("foo"), Lease: lease1.ID, Value: []byte("abc")}
 	l1, lerr1 := lc.Campaign(context.TODO(), req1)
-	if lerr1 != nil {
-		t.Fatal(lerr1)
-	}
+	require.NoError(t, lerr1)
 
 	campaignc := make(chan struct{})
 	go func() {
@@ -67,9 +63,8 @@ func TestV3ElectionCampaign(t *testing.T) {
 		t.Fatalf("got leadership before resign")
 	}
 
-	if _, uerr := lc.Resign(context.TODO(), &epb.ResignRequest{Leader: l1.Leader}); uerr != nil {
-		t.Fatal(uerr)
-	}
+	_, uerr := lc.Resign(context.TODO(), &epb.ResignRequest{Leader: l1.Leader})
+	require.NoError(t, uerr)
 
 	select {
 	case <-time.After(200 * time.Millisecond):
@@ -78,9 +73,7 @@ func TestV3ElectionCampaign(t *testing.T) {
 	}
 
 	lval, lverr := lc.Leader(context.TODO(), &epb.LeaderRequest{Name: []byte("foo")})
-	if lverr != nil {
-		t.Fatal(lverr)
-	}
+	require.NoError(t, lverr)
 
 	if string(lval.Kv.Value) != "def" {
 		t.Fatalf("got election value %q, expected %q", string(lval.Kv.Value), "def")
@@ -127,13 +120,9 @@ func TestV3ElectionObserve(t *testing.T) {
 	}
 
 	lease1, err1 := integration.ToGRPC(clus.RandClient()).Lease.LeaseGrant(context.TODO(), &pb.LeaseGrantRequest{TTL: 30})
-	if err1 != nil {
-		t.Fatal(err1)
-	}
+	require.NoError(t, err1)
 	c1, cerr1 := lc.Campaign(context.TODO(), &epb.CampaignRequest{Name: []byte("foo"), Lease: lease1.ID, Value: []byte("0")})
-	if cerr1 != nil {
-		t.Fatal(cerr1)
-	}
+	require.NoError(t, cerr1)
 
 	// overlap other leader so it waits on resign
 	leader2c := make(chan struct{})
@@ -160,9 +149,8 @@ func TestV3ElectionObserve(t *testing.T) {
 	for i := 1; i < 5; i++ {
 		v := []byte(fmt.Sprintf("%d", i))
 		req := &epb.ProclaimRequest{Leader: c1.Leader, Value: v}
-		if _, err := lc.Proclaim(context.TODO(), req); err != nil {
-			t.Fatal(err)
-		}
+		_, err := lc.Proclaim(context.TODO(), req)
+		require.NoError(t, err)
 	}
 	// start second leader
 	lc.Resign(context.TODO(), &epb.ResignRequest{Leader: c1.Leader})

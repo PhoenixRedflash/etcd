@@ -71,7 +71,7 @@ func TestDowngradeWithUserAuth(t *testing.T) {
 	testDowngradeWithAuth(t, false, true, WithAuth("user0", "user0Pass"))
 }
 
-func testDowngradeWithAuth(t *testing.T, expectConnectionError, expectOperationError bool, opts ...config.ClientOption) {
+func testDowngradeWithAuth(t *testing.T, _expectConnectionError, _expectOperationError bool, _opts ...config.ClientOption) {
 	// TODO(ahrtr): finish this after we added interface methods `Downgrade` into `Client`
 	t.Skip()
 }
@@ -121,7 +121,7 @@ func TestMoveLeaderWithUserAuth(t *testing.T) {
 	testMoveLeaderWithAuth(t, false, true, WithAuth("user0", "user0Pass"))
 }
 
-func testMoveLeaderWithAuth(t *testing.T, expectConnectionError, expectOperationError bool, opts ...config.ClientOption) {
+func testMoveLeaderWithAuth(t *testing.T, _expectConnectionError, _expectOperationError bool, _opts ...config.ClientOption) {
 	// TODO(ahrtr): finish this after we added interface methods `MoveLeader` into `Client`
 	t.Skip()
 }
@@ -145,7 +145,7 @@ func TestSnapshotWithUserAuth(t *testing.T) {
 	testSnapshotWithAuth(t, false, true, WithAuth("user0", "user0Pass"))
 }
 
-func testSnapshotWithAuth(t *testing.T, expectConnectionError, expectOperationError bool, opts ...config.ClientOption) {
+func testSnapshotWithAuth(t *testing.T, _expectConnectionError, _expectOperationError bool, _opts ...config.ClientOption) {
 	// TODO(ahrtr): finish this after we added interface methods `Snapshot` into `Client`
 	t.Skip()
 }
@@ -215,14 +215,12 @@ func testMaintenanceOperationWithAuth(t *testing.T, expectConnectError, expectOp
 
 	ccWithAuth, err := clus.Client(opts...)
 	if expectConnectError {
-		if err == nil {
-			t.Fatalf("%s: expected connection error, but got successful response", t.Name())
-		}
+		require.Errorf(t, err, "%s: expected connection error, but got successful response", t.Name())
 		t.Logf("%s: connection error: %v", t.Name(), err)
 		return
 	}
 	if err != nil {
-		t.Fatalf("%s: unexpected connection error (%v)", t.Name(), err)
+		require.NoErrorf(t, err, "%s: unexpected connection error", t.Name())
 		return
 	}
 
@@ -233,15 +231,11 @@ func testMaintenanceOperationWithAuth(t *testing.T, expectConnectError, expectOp
 		err := f(ctx, ccWithAuth)
 
 		if expectOperationError {
-			if err == nil {
-				t.Fatalf("%s: expected error, but got successful response", t.Name())
-			}
+			require.Errorf(t, err, "%s: expected error, but got successful response", t.Name())
 			t.Logf("%s: operation error: %v", t.Name(), err)
 			return
 		}
 
-		if err != nil {
-			t.Fatalf("%s: unexpected operation error (%v)", t.Name(), err)
-		}
+		require.NoErrorf(t, err, "%s: unexpected operation error", t.Name())
 	})
 }

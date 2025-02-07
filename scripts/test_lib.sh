@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+set -euo pipefail
+
 ROOT_MODULE="go.etcd.io/etcd"
 
 if [[ "$(go list)" != "${ROOT_MODULE}/v3" ]]; then
@@ -105,7 +107,7 @@ function relativePath {
 
 ####   Discovery of files/packages within a go module #####
 
-# go_srcs_in_module [package]
+# go_srcs_in_module
 # returns list of all not-generated go sources in the current (dir) module.
 function go_srcs_in_module {
   go list -f "{{with \$c:=.}}{{range \$f:=\$c.GoFiles  }}{{\$c.Dir}}/{{\$f}}{{\"\n\"}}{{end}}{{range \$f:=\$c.TestGoFiles  }}{{\$c.Dir}}/{{\$f}}{{\"\n\"}}{{end}}{{range \$f:=\$c.XTestGoFiles  }}{{\$c.Dir}}/{{\$f}}{{\"\n\"}}{{end}}{{end}}" ./... | grep -vE "(\\.pb\\.go|\\.pb\\.gw.go)"
@@ -164,7 +166,7 @@ function run_for_module {
 }
 
 function module_dirs() {
-  echo "api pkg client/pkg client/v2 client/v3 server etcdutl etcdctl tests ."
+  echo "api pkg client/pkg client/internal/v2 client/v3 server etcdutl etcdctl tests tools/mod tools/rw-heatmaps tools/testgrid-analysis ."
 }
 
 # maybe_run [cmd...] runs given command depending on the DRY_RUN flag.
@@ -176,6 +178,9 @@ function maybe_run() {
   fi
 }
 
+# modules
+# returns the list of all modules in the project, not including the tools,
+# as they are not considered to be added to the bill for materials.
 function modules() {
   modules=(
     "${ROOT_MODULE}/api/v3"
@@ -191,7 +196,7 @@ function modules() {
   echo "${modules[@]}"
 }
 
-function modules_exp() {
+function modules_for_bom() {
   for m in $(modules); do
     echo -n "${m}/... "
   done
@@ -201,18 +206,32 @@ function modules_exp() {
 #  run given command across all modules and packages
 #  (unless the set is limited using ${PKG} or / ${USERMOD})
 function run_for_modules {
+  KEEP_GOING_MODULE=${KEEP_GOING_MODULE:-false}
   local pkg="${PKG:-./...}"
+  local fail_mod=false
   if [ -z "${USERMOD:-}" ]; then
     for m in $(module_dirs); do
-      run_for_module "${m}" "$@" "${pkg}" || return "$?"
+      if run_for_module "${m}" "$@" "${pkg}"; then
+        continue
+      else
+        if [ "$KEEP_GOING_MODULE" = false ]; then
+          log_error "There was a Failure in module ${m}, aborting..."
+          return 1
+        fi
+        log_error "There was a Failure in module ${m}, keep going..."
+        fail_mod=true
+      fi
     done
+    if [ "$fail_mod" = true ]; then
+      return 1
+    fi
   else
     run_for_module "${USERMOD}" "$@" "${pkg}" || return "$?"
   fi
 }
 
 junitFilenamePrefix() {
-  if [[ -z "${JUNIT_REPORT_DIR}" ]]; then
+  if [[ -z "${JUNIT_REPORT_DIR:-}" ]]; then
     echo ""
     return
   fi
@@ -222,7 +241,7 @@ junitFilenamePrefix() {
 }
 
 function produce_junit_xmlreport {
-  local -r junit_filename_prefix=$1
+  local -r junit_filename_prefix=${1:-}
   if [[ -z "${junit_filename_prefix}" ]]; then
     return
   fi
@@ -232,7 +251,7 @@ function produce_junit_xmlreport {
 
   # Ensure that gotestsum is run without cross-compiling
   run_go_tool gotest.tools/gotestsum --junitfile "${junit_xml_filename}" --raw-command cat "${junit_filename_prefix}"*.stdout || exit 1
-  if [ "${VERBOSE}" != "1" ]; then
+  if [ "${VERBOSE:-}" != "1" ]; then
     rm "${junit_filename_prefix}"*.stdout
   fi
 
@@ -290,8 +309,9 @@ function go_test {
 
   junit_filename_prefix=$(junitFilenamePrefix)
 
-  if [ "${VERBOSE}" == "1" ]; then
-    goTestFlags="-v"
+  if [ "${VERBOSE:-}" == "1" ]; then
+    goTestFlags="-v "
+    goTestFlags+="-json "
   fi
 
   # Expanding patterns (like ./...) into list of packages
@@ -306,6 +326,10 @@ function go_test {
     fi
   fi
 
+  if [ "${mode}" == "fail_fast" ]; then
+    goTestFlags+="-failfast "
+  fi
+
   local failures=""
 
   # execution of tests against packages:
@@ -315,7 +339,7 @@ function go_test {
     additional_flags=$(${flags_for_package_func} ${pkg})
 
     # shellcheck disable=SC2206
-    local cmd=( go test ${goTestFlags} ${additional_flags} "$@" ${pkg} )
+    local cmd=( go test ${goTestFlags} ${additional_flags} ${pkg} "$@" )
 
     # shellcheck disable=SC2086
     if ! run env ${goTestEnv} ETCD_VERIFY="${ETCD_VERIFY}" "${cmd[@]}" | tee ${junit_filename_prefix:+"${junit_filename_prefix}.stdout"} | grep --binary-files=text "${go_test_grep_pattern}" ; then
@@ -392,15 +416,15 @@ function run_go_tool {
   GOARCH="" run "${cmdbin}" "$@" || return 2
 }
 
-# assert_no_git_modifications fails if there are any uncommited changes.
+# assert_no_git_modifications fails if there are any uncommitted changes.
 function assert_no_git_modifications {
   log_callout "Making sure everything is committed."
   if ! git diff --cached --exit-code; then
-    log_error "Found staged by uncommited changes. Do commit/stash your changes first."
+    log_error "Found staged by uncommitted changes. Do commit/stash your changes first."
     return 2
   fi
   if ! git diff  --exit-code; then
-    log_error "Found unstaged and uncommited changes. Do commit/stash your changes first."
+    log_error "Found unstaged and uncommitted changes. Do commit/stash your changes first."
     return 2
   fi
 }
@@ -432,3 +456,27 @@ function git_assert_branch_in_sync {
     log_warning "Cannot verify consistency with the origin, as git is on detached branch."
   fi
 }
+
+# The version present in the .go-verion is the default version that test and build scripts will use.
+# However, it is possible to control the version that should be used with the help of env vars:
+# - FORCE_HOST_GO: if set to a non-empty value, use the version of go installed in system's $PATH.
+# - GO_VERSION: desired version of go to be used, might differ from what is present in .go-version.
+#               If empty, the value defaults to the version in .go-version.
+function determine_go_version {
+  # Borrowing from how Kubernetes does this:
+  #  https://github.com/kubernetes/kubernetes/blob/17854f0e0a153b06f9d0db096e2cd8ab2fa89c11/hack/lib/golang.sh#L510-L520
+  #
+  # default GO_VERSION to content of .go-version
+  GO_VERSION="${GO_VERSION:-"$(cat "${ETCD_ROOT_DIR}/.go-version")"}"
+  if [ "${GOTOOLCHAIN:-auto}" != 'auto' ]; then
+    # no-op, just respect GOTOOLCHAIN
+    :
+  elif [ -n "${FORCE_HOST_GO:-}" ]; then
+    export GOTOOLCHAIN='local'
+  else
+    GOTOOLCHAIN="go${GO_VERSION}"
+    export GOTOOLCHAIN
+  fi
+}
+
+determine_go_version

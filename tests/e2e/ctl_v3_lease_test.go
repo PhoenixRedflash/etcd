@@ -20,6 +20,7 @@ import (
 	"strings"
 	"testing"
 
+	"go.etcd.io/etcd/pkg/v3/expect"
 	"go.etcd.io/etcd/tests/v3/framework/e2e"
 )
 
@@ -27,12 +28,15 @@ func TestCtlV3LeaseKeepAlive(t *testing.T) { testCtl(t, leaseTestKeepAlive) }
 func TestCtlV3LeaseKeepAliveNoTLS(t *testing.T) {
 	testCtl(t, leaseTestKeepAlive, withCfg(*e2e.NewConfigNoTLS()))
 }
+
 func TestCtlV3LeaseKeepAliveClientTLS(t *testing.T) {
 	testCtl(t, leaseTestKeepAlive, withCfg(*e2e.NewConfigClientTLS()))
 }
+
 func TestCtlV3LeaseKeepAliveClientAutoTLS(t *testing.T) {
 	testCtl(t, leaseTestKeepAlive, withCfg(*e2e.NewConfigClientAutoTLS()))
 }
+
 func TestCtlV3LeaseKeepAlivePeerTLS(t *testing.T) {
 	testCtl(t, leaseTestKeepAlive, withCfg(*e2e.NewConfigPeerTLS()))
 }
@@ -93,5 +97,5 @@ func ctlV3LeaseKeepAlive(cx ctlCtx, leaseID string) error {
 
 func ctlV3LeaseRevoke(cx ctlCtx, leaseID string) error {
 	cmdArgs := append(cx.PrefixArgs(), "lease", "revoke", leaseID)
-	return e2e.SpawnWithExpectWithEnv(cmdArgs, cx.envMap, fmt.Sprintf("lease %s revoked", leaseID))
+	return e2e.SpawnWithExpectWithEnv(cmdArgs, cx.envMap, expect.ExpectedResponse{Value: fmt.Sprintf("lease %s revoked", leaseID)})
 }

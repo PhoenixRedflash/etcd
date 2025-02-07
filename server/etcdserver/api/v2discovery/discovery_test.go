@@ -27,12 +27,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"go.uber.org/zap/zaptest"
 
 	"go.etcd.io/etcd/client/pkg/v3/types"
 	"go.etcd.io/etcd/client/v2"
-
-	"github.com/jonboulle/clockwork"
 )
 
 const (
@@ -87,7 +86,6 @@ func TestNewProxyFunc(t *testing.T) {
 		if g.String() != w {
 			t.Errorf("%s: proxyURL=%q, want %q", in, g, w)
 		}
-
 	}
 }
 
@@ -213,7 +211,7 @@ func TestCheckCluster(t *testing.T) {
 				}
 			}()
 			ns, size, index, err := d.checkCluster()
-			if err != tt.werr {
+			if !errors.Is(err, tt.werr) {
 				t.Errorf("#%d: err = %v, want %v", i, err, tt.werr)
 			}
 			if reflect.DeepEqual(ns, tt.nodes) {
@@ -337,7 +335,7 @@ func TestCreateSelf(t *testing.T) {
 
 	for i, tt := range tests {
 		d := newTestDiscovery(t, "1000", 1, tt.c)
-		if err := d.createSelf(""); err != tt.werr {
+		if err := d.createSelf(""); !errors.Is(err, tt.werr) {
 			t.Errorf("#%d: err = %v, want %v", i, err, nil)
 		}
 	}
@@ -384,7 +382,7 @@ func TestNodesToCluster(t *testing.T) {
 
 	for i, tt := range tests {
 		cluster, err := nodesToCluster(tt.nodes, tt.size)
-		if err != tt.werr {
+		if !errors.Is(err, tt.werr) {
 			t.Errorf("#%d: err = %v, want %v", i, err, tt.werr)
 		}
 		if !reflect.DeepEqual(cluster, tt.wcluster) {
@@ -436,7 +434,7 @@ func TestRetryFailure(t *testing.T) {
 			fc.Advance(time.Second * (0x1 << i))
 		}
 	}()
-	if _, _, _, err := d.checkCluster(); err != ErrTooManyRetries {
+	if _, _, _, err := d.checkCluster(); !errors.Is(err, ErrTooManyRetries) {
 		t.Errorf("err = %v, want %v", err, ErrTooManyRetries)
 	}
 }

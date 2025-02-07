@@ -15,16 +15,13 @@
 package apply
 
 import (
-	"context"
 	"sync"
 
 	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/pkg/v3/traceutil"
 	"go.etcd.io/etcd/server/v3/auth"
-	"go.etcd.io/etcd/server/v3/etcdserver/api/membership"
 	"go.etcd.io/etcd/server/v3/etcdserver/txn"
 	"go.etcd.io/etcd/server/v3/lease"
-	"go.etcd.io/etcd/server/v3/storage/mvcc"
 )
 
 type authApplierV3 struct {
@@ -43,7 +40,7 @@ func newAuthApplierV3(as auth.AuthStore, base applierV3, lessor lease.Lessor) *a
 	return &authApplierV3{applierV3: base, as: as, lessor: lessor}
 }
 
-func (aa *authApplierV3) Apply(ctx context.Context, r *pb.InternalRaftRequest, shouldApplyV3 membership.ShouldApplyV3, applyFunc applyFunc) *Result {
+func (aa *authApplierV3) Apply(r *pb.InternalRaftRequest, applyFunc applyFunc) *Result {
 	aa.mu.Lock()
 	defer aa.mu.Unlock()
 	if r.Header != nil {
@@ -59,13 +56,13 @@ func (aa *authApplierV3) Apply(ctx context.Context, r *pb.InternalRaftRequest, s
 			return &Result{Err: err}
 		}
 	}
-	ret := aa.applierV3.Apply(ctx, r, shouldApplyV3, applyFunc)
+	ret := aa.applierV3.Apply(r, applyFunc)
 	aa.authInfo.Username = ""
 	aa.authInfo.Revision = 0
 	return ret
 }
 
-func (aa *authApplierV3) Put(ctx context.Context, txn mvcc.TxnWrite, r *pb.PutRequest) (*pb.PutResponse, *traceutil.Trace, error) {
+func (aa *authApplierV3) Put(r *pb.PutRequest) (*pb.PutResponse, *traceutil.Trace, error) {
 	if err := aa.as.IsPutPermitted(&aa.authInfo, r.Key); err != nil {
 		return nil, nil, err
 	}
@@ -84,35 +81,35 @@ func (aa *authApplierV3) Put(ctx context.Context, txn mvcc.TxnWrite, r *pb.PutRe
 			return nil, nil, err
 		}
 	}
-	return aa.applierV3.Put(ctx, txn, r)
+	return aa.applierV3.Put(r)
 }
 
-func (aa *authApplierV3) Range(ctx context.Context, txn mvcc.TxnRead, r *pb.RangeRequest) (*pb.RangeResponse, error) {
+func (aa *authApplierV3) Range(r *pb.RangeRequest) (*pb.RangeResponse, *traceutil.Trace, error) {
 	if err := aa.as.IsRangePermitted(&aa.authInfo, r.Key, r.RangeEnd); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return aa.applierV3.Range(ctx, txn, r)
+	return aa.applierV3.Range(r)
 }
 
-func (aa *authApplierV3) DeleteRange(txn mvcc.TxnWrite, r *pb.DeleteRangeRequest) (*pb.DeleteRangeResponse, error) {
+func (aa *authApplierV3) DeleteRange(r *pb.DeleteRangeRequest) (*pb.DeleteRangeResponse, *traceutil.Trace, error) {
 	if err := aa.as.IsDeleteRangePermitted(&aa.authInfo, r.Key, r.RangeEnd); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if r.PrevKv {
 		err := aa.as.IsRangePermitted(&aa.authInfo, r.Key, r.RangeEnd)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 
-	return aa.applierV3.DeleteRange(txn, r)
+	return aa.applierV3.DeleteRange(r)
 }
 
-func (aa *authApplierV3) Txn(ctx context.Context, rt *pb.TxnRequest) (*pb.TxnResponse, *traceutil.Trace, error) {
+func (aa *authApplierV3) Txn(rt *pb.TxnRequest) (*pb.TxnResponse, *traceutil.Trace, error) {
 	if err := txn.CheckTxnAuth(aa.as, &aa.authInfo, rt); err != nil {
 		return nil, nil, err
 	}
-	return aa.applierV3.Txn(ctx, rt)
+	return aa.applierV3.Txn(rt)
 }
 
 func (aa *authApplierV3) LeaseRevoke(lc *pb.LeaseRevokeRequest) (*pb.LeaseRevokeResponse, error) {
@@ -125,13 +122,24 @@ func (aa *authApplierV3) LeaseRevoke(lc *pb.LeaseRevokeRequest) (*pb.LeaseRevoke
 func (aa *authApplierV3) checkLeasePuts(leaseID lease.LeaseID) error {
 	l := aa.lessor.Lookup(leaseID)
 	if l != nil {
-		for _, key := range l.Keys() {
-			if err := aa.as.IsPutPermitted(&aa.authInfo, []byte(key)); err != nil {
-				return err
-			}
-		}
+		return aa.checkLeasePutsKeys(l)
 	}
 
+	return nil
+}
+
+func (aa *authApplierV3) checkLeasePutsKeys(l *lease.Lease) error {
+	// early return for most-common scenario of either disabled auth or admin user.
+	// IsAdminPermitted also checks whether auth is enabled
+	if err := aa.as.IsAdminPermitted(&aa.authInfo); err == nil {
+		return nil
+	}
+
+	for _, key := range l.Keys() {
+		if err := aa.as.IsPutPermitted(&aa.authInfo, []byte(key)); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

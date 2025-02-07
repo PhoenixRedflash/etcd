@@ -19,11 +19,11 @@ import (
 	"os"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"go.etcd.io/etcd/api/v3/version"
 	"go.etcd.io/etcd/etcdctl/v3/ctlv3/command"
 	"go.etcd.io/etcd/pkg/v3/cobrautl"
-
-	"github.com/spf13/cobra"
 )
 
 const (
@@ -38,10 +38,7 @@ const (
 
 var (
 	globalFlags = command.GlobalFlags{}
-)
-
-var (
-	rootCmd = &cobra.Command{
+	rootCmd     = &cobra.Command{
 		Use:        cliName,
 		Short:      cliDescription,
 		SuggestFor: []string{"etcdctl"},
@@ -62,6 +59,8 @@ func init() {
 	rootCmd.PersistentFlags().DurationVar(&globalFlags.CommandTimeOut, "command-timeout", defaultCommandTimeOut, "timeout for short running command (excluding dial timeout)")
 	rootCmd.PersistentFlags().DurationVar(&globalFlags.KeepAliveTime, "keepalive-time", defaultKeepAliveTime, "keepalive time for client connections")
 	rootCmd.PersistentFlags().DurationVar(&globalFlags.KeepAliveTimeout, "keepalive-timeout", defaultKeepAliveTimeOut, "keepalive timeout for client connections")
+	rootCmd.PersistentFlags().IntVar(&globalFlags.MaxCallSendMsgSize, "max-request-bytes", 0, "client-side request send limit in bytes (if 0, it defaults to 2.0 MiB (2 * 1024 * 1024).)")
+	rootCmd.PersistentFlags().IntVar(&globalFlags.MaxCallRecvMsgSize, "max-recv-bytes", 0, "client-side response receive limit in bytes (if 0, it defaults to \"math.MaxInt32\")")
 
 	// TODO: secure by default when etcd enables secure gRPC by default.
 	rootCmd.PersistentFlags().BoolVar(&globalFlags.Insecure, "insecure-transport", true, "disable transport security for client connections")
@@ -117,9 +116,8 @@ func MustStart() {
 	if err := Start(); err != nil {
 		if rootCmd.SilenceErrors {
 			cobrautl.ExitWithError(cobrautl.ExitError, err)
-		} else {
-			os.Exit(cobrautl.ExitError)
 		}
+		os.Exit(cobrautl.ExitError)
 	}
 }
 

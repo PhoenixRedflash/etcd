@@ -59,6 +59,10 @@ The snapshot restore options closely resemble to those used in the `etcd` comman
 
 - skip-hash-check -- Ignore snapshot integrity hash value (required if copied from data directory)
 
+- bump-revision -- How much to increase the latest revision after restore
+
+- mark-compacted -- Mark the latest revision after restore as the point of scheduled compaction (required if --bump-revision > 0, disallowed otherwise)
+
 #### Output
 
 A new etcd data directory initialized with the snapshot.
@@ -113,6 +117,44 @@ Prints a line of JSON encoding the database hash, revision, total keys, and size
 +----------+----------+------------+------------+
 | cf1550fb |        3 |          3 | 25 kB      |
 +----------+----------+------------+------------+
+```
+
+### HASHKV [options] \<filename\>
+
+HASHKV prints hash of keys and values up to given revision.
+
+#### Options
+
+- rev -- Revision number. Default is 0 which means the latest revision.
+
+#### Output
+
+##### Simple format
+
+Prints a humanized table of the KV hash, hash revision and compact revision.
+
+##### JSON format
+
+Prints a line of JSON encoding the KV hash, hash revision and compact revision.
+
+#### Examples
+```bash
+./etcdutl hashkv file.db
+# 35c86e9b, 214, 150
+```
+
+```bash
+./etcdutl --write-out=json hashkv file.db
+# {"hash":902327963,"hashRevision":214,"compactRevision":150}
+```
+
+```bash
+./etcdutl --write-out=table hashkv file.db
++----------+---------------+------------------+
+|   HASH   | HASH REVISION | COMPACT REVISION |
++----------+---------------+------------------+
+| 35c86e9b |           214 |              150 |
++----------+---------------+------------------+
 ```
 
 ### VERSION

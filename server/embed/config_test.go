@@ -17,20 +17,26 @@ package embed
 import (
 	"crypto/tls"
 	"errors"
+	"flag"
 	"fmt"
 	"net"
 	"net/url"
 	"os"
+	"strconv"
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"sigs.k8s.io/yaml"
 
 	"go.etcd.io/etcd/client/pkg/v3/srv"
 	"go.etcd.io/etcd/client/pkg/v3/transport"
 	"go.etcd.io/etcd/client/pkg/v3/types"
-
-	"sigs.k8s.io/yaml"
+	"go.etcd.io/etcd/pkg/v3/featuregate"
+	"go.etcd.io/etcd/server/v3/features"
 )
 
 func notFoundErr(service, domain string) error {
@@ -40,7 +46,8 @@ func notFoundErr(service, domain string) error {
 
 func TestConfigFileOtherFields(t *testing.T) {
 	ctls := securityConfig{TrustedCAFile: "cca", CertFile: "ccert", KeyFile: "ckey"}
-	ptls := securityConfig{TrustedCAFile: "pca", CertFile: "pcert", KeyFile: "pkey"}
+	// Note AllowedCN and AllowedHostname are mutually exclusive, this test is just to verify the fields can be correctly marshalled & unmarshalled.
+	ptls := securityConfig{TrustedCAFile: "pca", CertFile: "pcert", KeyFile: "pkey", AllowedCNs: []string{"etcd"}, AllowedHostnames: []string{"whatever.example.com"}}
 	yc := struct {
 		ClientSecurityCfgFile securityConfig       `json:"client-transport-security"`
 		PeerSecurityCfgFile   securityConfig       `json:"peer-transport-security"`
@@ -81,38 +88,325 @@ func TestConfigFileOtherFields(t *testing.T) {
 		t.Errorf("PeerTLS = %v, want %v", cfg.PeerTLSInfo, ptls)
 	}
 
-	assert.Equal(t, true, cfg.ForceNewCluster, "ForceNewCluster does not match")
+	assert.Truef(t, cfg.ForceNewCluster, "ForceNewCluster does not match")
 
-	assert.Equal(t, true, cfg.SocketOpts.ReusePort, "ReusePort does not match")
+	assert.Truef(t, cfg.SocketOpts.ReusePort, "ReusePort does not match")
 
-	assert.Equal(t, false, cfg.SocketOpts.ReuseAddress, "ReuseAddress does not match")
+	assert.Falsef(t, cfg.SocketOpts.ReuseAddress, "ReuseAddress does not match")
+}
+
+func TestConfigFileFeatureGates(t *testing.T) {
+	testCases := []struct {
+		name                                     string
+		serverFeatureGatesJSON                   string
+		experimentalStopGRPCServiceOnDefrag      string
+		experimentalInitialCorruptCheck          string
+		experimentalCompactHashCheckEnabled      string
+		experimentalTxnModeWriteWithSharedBuffer string
+		experimentalEnableLeaseCheckpoint        string
+		experimentalEnableLeaseCheckpointPersist string
+		expectErr                                bool
+		expectedFeatures                         map[featuregate.Feature]bool
+	}{
+		{
+			name: "default",
+			expectedFeatures: map[featuregate.Feature]bool{
+				features.DistributedTracing:           false,
+				features.StopGRPCServiceOnDefrag:      false,
+				features.InitialCorruptCheck:          false,
+				features.TxnModeWriteWithSharedBuffer: true,
+				features.LeaseCheckpoint:              false,
+				features.LeaseCheckpointPersist:       false,
+			},
+		},
+		{
+			name:                                "cannot set both experimental flag and feature gate flag for StopGRPCServiceOnDefrag",
+			serverFeatureGatesJSON:              "StopGRPCServiceOnDefrag=true",
+			experimentalStopGRPCServiceOnDefrag: "false",
+			expectErr:                           true,
+		},
+		{
+			name:                            "cannot set both experimental flag and feature gate flag for InitialCorruptCheck",
+			serverFeatureGatesJSON:          "InitialCorruptCheck=true",
+			experimentalInitialCorruptCheck: "false",
+			expectErr:                       true,
+		},
+		{
+			name:                                     "cannot set both experimental flag and feature gate flag for TxnModeWriteWithSharedBuffer",
+			serverFeatureGatesJSON:                   "TxnModeWriteWithSharedBuffer=true",
+			experimentalTxnModeWriteWithSharedBuffer: "false",
+			expectErr:                                true,
+		},
+		{
+			name:                                "ok to set different experimental flag and feature gate flag",
+			serverFeatureGatesJSON:              "DistributedTracing=true",
+			experimentalStopGRPCServiceOnDefrag: "true",
+			expectedFeatures: map[featuregate.Feature]bool{
+				features.DistributedTracing:           true,
+				features.StopGRPCServiceOnDefrag:      true,
+				features.TxnModeWriteWithSharedBuffer: true,
+			},
+		},
+		{
+			name:                                "ok to set different multiple experimental flags and feature gate flags",
+			serverFeatureGatesJSON:              "StopGRPCServiceOnDefrag=true,TxnModeWriteWithSharedBuffer=true,LeaseCheckpoint=true",
+			experimentalCompactHashCheckEnabled: "true",
+			experimentalInitialCorruptCheck:     "true",
+			expectedFeatures: map[featuregate.Feature]bool{
+				features.StopGRPCServiceOnDefrag:      true,
+				features.CompactHashCheck:             true,
+				features.InitialCorruptCheck:          true,
+				features.TxnModeWriteWithSharedBuffer: true,
+				features.LeaseCheckpoint:              true,
+			},
+		},
+		{
+			name:                                "can set feature gate StopGRPCServiceOnDefrag to true from experimental flag",
+			experimentalStopGRPCServiceOnDefrag: "true",
+			expectedFeatures: map[featuregate.Feature]bool{
+				features.StopGRPCServiceOnDefrag:      true,
+				features.TxnModeWriteWithSharedBuffer: true,
+			},
+		},
+		{
+			name:                                "can set feature gate StopGRPCServiceOnDefrag to false from experimental flag",
+			experimentalStopGRPCServiceOnDefrag: "false",
+			expectedFeatures: map[featuregate.Feature]bool{
+				features.StopGRPCServiceOnDefrag:      false,
+				features.TxnModeWriteWithSharedBuffer: true,
+			},
+		},
+		{
+			name:                            "can set feature gate experimentalInitialCorruptCheck to true from experimental flag",
+			experimentalInitialCorruptCheck: "true",
+			expectedFeatures: map[featuregate.Feature]bool{
+				features.InitialCorruptCheck:          true,
+				features.TxnModeWriteWithSharedBuffer: true,
+			},
+		},
+		{
+			name:                            "can set feature gate experimentalInitialCorruptCheck to false from experimental flag",
+			experimentalInitialCorruptCheck: "false",
+			expectedFeatures: map[featuregate.Feature]bool{
+				features.InitialCorruptCheck:          false,
+				features.TxnModeWriteWithSharedBuffer: true,
+			},
+		},
+		{
+			name:                                     "can set feature gate TxnModeWriteWithSharedBuffer to true from experimental flag",
+			experimentalTxnModeWriteWithSharedBuffer: "true",
+			expectedFeatures: map[featuregate.Feature]bool{
+				features.TxnModeWriteWithSharedBuffer: true,
+			},
+		},
+		{
+			name:                                     "can set feature gate TxnModeWriteWithSharedBuffer to false from experimental flag",
+			experimentalTxnModeWriteWithSharedBuffer: "false",
+			expectedFeatures: map[featuregate.Feature]bool{
+				features.TxnModeWriteWithSharedBuffer: false,
+			},
+		},
+		{
+			name:                   "can set feature gate StopGRPCServiceOnDefrag to true from feature gate flag",
+			serverFeatureGatesJSON: "StopGRPCServiceOnDefrag=true",
+			expectedFeatures: map[featuregate.Feature]bool{
+				features.StopGRPCServiceOnDefrag:      true,
+				features.TxnModeWriteWithSharedBuffer: true,
+			},
+		},
+		{
+			name:                   "can set feature gate InitialCorruptCheck to true from feature gate flag",
+			serverFeatureGatesJSON: "InitialCorruptCheck=true",
+			expectedFeatures: map[featuregate.Feature]bool{
+				features.InitialCorruptCheck:          true,
+				features.TxnModeWriteWithSharedBuffer: true,
+			},
+		},
+		{
+			name:                   "can set feature gate StopGRPCServiceOnDefrag to false from feature gate flag",
+			serverFeatureGatesJSON: "StopGRPCServiceOnDefrag=false",
+			expectedFeatures: map[featuregate.Feature]bool{
+				features.StopGRPCServiceOnDefrag:      false,
+				features.TxnModeWriteWithSharedBuffer: true,
+			},
+		},
+		{
+			name:                   "can set feature gate TxnModeWriteWithSharedBuffer to true from feature gate flag",
+			serverFeatureGatesJSON: "TxnModeWriteWithSharedBuffer=true",
+			expectedFeatures: map[featuregate.Feature]bool{
+				features.TxnModeWriteWithSharedBuffer: true,
+			},
+		},
+		{
+			name:                   "can set feature gate TxnModeWriteWithSharedBuffer to false from feature gate flag",
+			serverFeatureGatesJSON: "TxnModeWriteWithSharedBuffer=false",
+			expectedFeatures: map[featuregate.Feature]bool{
+				features.TxnModeWriteWithSharedBuffer: false,
+			},
+		},
+		{
+			name:                                "cannot set both experimental flag and feature gate flag for ExperimentalCompactHashCheckEnabled",
+			serverFeatureGatesJSON:              "CompactHashCheck=true",
+			experimentalCompactHashCheckEnabled: "false",
+			expectErr:                           true,
+		},
+		{
+			name:                                "can set feature gate experimentalCompactHashCheckEnabled to true from experimental flag",
+			experimentalCompactHashCheckEnabled: "true",
+			expectedFeatures: map[featuregate.Feature]bool{
+				features.CompactHashCheck:             true,
+				features.TxnModeWriteWithSharedBuffer: true,
+			},
+		},
+		{
+			name:                                "can set feature gate experimentalCompactHashCheckEnabled to false from experimental flag",
+			experimentalCompactHashCheckEnabled: "false",
+			expectedFeatures: map[featuregate.Feature]bool{
+				features.CompactHashCheck:             false,
+				features.TxnModeWriteWithSharedBuffer: true,
+			},
+		},
+		{
+			name:                   "can set feature gate CompactHashCheck to true from feature gate flag",
+			serverFeatureGatesJSON: "CompactHashCheck=true",
+			expectedFeatures: map[featuregate.Feature]bool{
+				features.CompactHashCheck:             true,
+				features.TxnModeWriteWithSharedBuffer: true,
+			},
+		},
+		{
+			name:                                     "can set feature gate experimentalEnableLeaseCheckpoint and experimentalEnableLeaseCheckpointPersist to true from experimental flag",
+			experimentalEnableLeaseCheckpoint:        "true",
+			experimentalEnableLeaseCheckpointPersist: "true",
+			expectedFeatures: map[featuregate.Feature]bool{
+				features.CompactHashCheck:             false,
+				features.TxnModeWriteWithSharedBuffer: true,
+				features.LeaseCheckpoint:              true,
+				features.LeaseCheckpointPersist:       true,
+			},
+		},
+		{
+			name:                   "can set feature gate LeaseCheckpoint and LeaseCheckpointPersist to true from feature gate flag",
+			serverFeatureGatesJSON: "LeaseCheckpointPersist=true,LeaseCheckpoint=true",
+			expectedFeatures: map[featuregate.Feature]bool{
+				features.TxnModeWriteWithSharedBuffer: true,
+				features.LeaseCheckpoint:              true,
+				features.LeaseCheckpointPersist:       true,
+			},
+		},
+		{
+			name:                                     "cannot set feature gate experimentalEnableLeaseCheckpoint=false and experimentalEnableLeaseCheckpointPersist=true",
+			experimentalEnableLeaseCheckpoint:        "false",
+			experimentalEnableLeaseCheckpointPersist: "true",
+			expectErr:                                true,
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			yc := struct {
+				ExperimentalStopGRPCServiceOnDefrag      *bool  `json:"experimental-stop-grpc-service-on-defrag,omitempty"`
+				ExperimentalInitialCorruptCheck          *bool  `json:"experimental-initial-corrupt-check,omitempty"`
+				ExperimentalCompactHashCheckEnabled      *bool  `json:"experimental-compact-hash-check-enabled,omitempty"`
+				ExperimentalTxnModeWriteWithSharedBuffer *bool  `json:"experimental-txn-mode-write-with-shared-buffer,omitempty"`
+				ExperimentalEnableLeaseCheckpoint        *bool  `json:"experimental-enable-lease-checkpoint,omitempty"`
+				ExperimentalEnableLeaseCheckpointPersist *bool  `json:"experimental-enable-lease-checkpoint-persist,omitempty"`
+				ServerFeatureGatesJSON                   string `json:"feature-gates"`
+			}{
+				ServerFeatureGatesJSON: tc.serverFeatureGatesJSON,
+			}
+
+			if tc.experimentalInitialCorruptCheck != "" {
+				experimentalInitialCorruptCheck, err := strconv.ParseBool(tc.experimentalInitialCorruptCheck)
+				if err != nil {
+					t.Fatal(err)
+				}
+				yc.ExperimentalInitialCorruptCheck = &experimentalInitialCorruptCheck
+			}
+
+			if tc.experimentalTxnModeWriteWithSharedBuffer != "" {
+				experimentalTxnModeWriteWithSharedBuffer, err := strconv.ParseBool(tc.experimentalTxnModeWriteWithSharedBuffer)
+				if err != nil {
+					t.Fatal(err)
+				}
+				yc.ExperimentalTxnModeWriteWithSharedBuffer = &experimentalTxnModeWriteWithSharedBuffer
+			}
+
+			if tc.experimentalStopGRPCServiceOnDefrag != "" {
+				experimentalStopGRPCServiceOnDefrag, err := strconv.ParseBool(tc.experimentalStopGRPCServiceOnDefrag)
+				if err != nil {
+					t.Fatal(err)
+				}
+				yc.ExperimentalStopGRPCServiceOnDefrag = &experimentalStopGRPCServiceOnDefrag
+			}
+
+			if tc.experimentalCompactHashCheckEnabled != "" {
+				experimentalCompactHashCheckEnabled, err := strconv.ParseBool(tc.experimentalCompactHashCheckEnabled)
+				if err != nil {
+					t.Fatal(err)
+				}
+				yc.ExperimentalCompactHashCheckEnabled = &experimentalCompactHashCheckEnabled
+			}
+
+			if tc.experimentalEnableLeaseCheckpoint != "" {
+				experimentalEnableLeaseCheckpoint, err := strconv.ParseBool(tc.experimentalEnableLeaseCheckpoint)
+				if err != nil {
+					t.Fatal(err)
+				}
+				yc.ExperimentalEnableLeaseCheckpoint = &experimentalEnableLeaseCheckpoint
+			}
+
+			if tc.experimentalEnableLeaseCheckpointPersist != "" {
+				experimentalEnableLeaseCheckpointPersist, err := strconv.ParseBool(tc.experimentalEnableLeaseCheckpointPersist)
+				if err != nil {
+					t.Fatal(err)
+				}
+				yc.ExperimentalEnableLeaseCheckpointPersist = &experimentalEnableLeaseCheckpointPersist
+			}
+
+			b, err := yaml.Marshal(&yc)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			tmpfile := mustCreateCfgFile(t, b)
+			defer os.Remove(tmpfile.Name())
+
+			cfg, err := ConfigFromFile(tmpfile.Name())
+			if tc.expectErr {
+				require.Errorf(t, err, "expect parse error")
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			for f := range features.DefaultEtcdServerFeatureGates {
+				if tc.expectedFeatures[f] != cfg.ServerFeatureGate.Enabled(f) {
+					t.Errorf("expected feature gate %s=%v, got %v", f, tc.expectedFeatures[f], cfg.ServerFeatureGate.Enabled(f))
+				}
+			}
+		})
+	}
 }
 
 // TestUpdateDefaultClusterFromName ensures that etcd can start with 'etcd --name=abc'.
 func TestUpdateDefaultClusterFromName(t *testing.T) {
 	cfg := NewConfig()
 	defaultInitialCluster := cfg.InitialCluster
-	oldscheme := cfg.APUrls[0].Scheme
-	origpeer := cfg.APUrls[0].String()
-	origadvc := cfg.ACUrls[0].String()
+	oldscheme := cfg.AdvertisePeerUrls[0].Scheme
+	origpeer := cfg.AdvertisePeerUrls[0].String()
+	origadvc := cfg.AdvertiseClientUrls[0].String()
 
 	cfg.Name = "abc"
-	lpport := cfg.LPUrls[0].Port()
+	lpport := cfg.ListenPeerUrls[0].Port()
 
 	// in case of 'etcd --name=abc'
 	exp := fmt.Sprintf("%s=%s://localhost:%s", cfg.Name, oldscheme, lpport)
 	_, _ = cfg.UpdateDefaultClusterFromName(defaultInitialCluster)
-	if exp != cfg.InitialCluster {
-		t.Fatalf("initial-cluster expected %q, got %q", exp, cfg.InitialCluster)
-	}
+	require.Equalf(t, exp, cfg.InitialCluster, "initial-cluster expected %q, got %q", exp, cfg.InitialCluster)
 	// advertise peer URL should not be affected
-	if origpeer != cfg.APUrls[0].String() {
-		t.Fatalf("advertise peer url expected %q, got %q", origadvc, cfg.APUrls[0].String())
-	}
+	require.Equalf(t, origpeer, cfg.AdvertisePeerUrls[0].String(), "advertise peer url expected %q, got %q", origadvc, cfg.AdvertisePeerUrls[0].String())
 	// advertise client URL should not be affected
-	if origadvc != cfg.ACUrls[0].String() {
-		t.Fatalf("advertise client url expected %q, got %q", origadvc, cfg.ACUrls[0].String())
-	}
+	require.Equalf(t, origadvc, cfg.AdvertiseClientUrls[0].String(), "advertise client url expected %q, got %q", origadvc, cfg.AdvertiseClientUrls[0].String())
 }
 
 // TestUpdateDefaultClusterFromNameOverwrite ensures that machine's default host is only used
@@ -124,38 +418,176 @@ func TestUpdateDefaultClusterFromNameOverwrite(t *testing.T) {
 
 	cfg := NewConfig()
 	defaultInitialCluster := cfg.InitialCluster
-	oldscheme := cfg.APUrls[0].Scheme
-	origadvc := cfg.ACUrls[0].String()
+	oldscheme := cfg.AdvertisePeerUrls[0].Scheme
+	origadvc := cfg.AdvertiseClientUrls[0].String()
 
 	cfg.Name = "abc"
-	lpport := cfg.LPUrls[0].Port()
-	cfg.LPUrls[0] = url.URL{Scheme: cfg.LPUrls[0].Scheme, Host: fmt.Sprintf("0.0.0.0:%s", lpport)}
+	lpport := cfg.ListenPeerUrls[0].Port()
+	cfg.ListenPeerUrls[0] = url.URL{Scheme: cfg.ListenPeerUrls[0].Scheme, Host: fmt.Sprintf("0.0.0.0:%s", lpport)}
 	dhost, _ := cfg.UpdateDefaultClusterFromName(defaultInitialCluster)
-	if dhost != defaultHostname {
-		t.Fatalf("expected default host %q, got %q", defaultHostname, dhost)
-	}
-	aphost, apport := cfg.APUrls[0].Hostname(), cfg.APUrls[0].Port()
-	if apport != lpport {
-		t.Fatalf("advertise peer url got different port %s, expected %s", apport, lpport)
-	}
-	if aphost != defaultHostname {
-		t.Fatalf("advertise peer url expected machine default host %q, got %q", defaultHostname, aphost)
-	}
+	require.Equalf(t, dhost, defaultHostname, "expected default host %q, got %q", defaultHostname, dhost)
+	aphost, apport := cfg.AdvertisePeerUrls[0].Hostname(), cfg.AdvertisePeerUrls[0].Port()
+	require.Equalf(t, apport, lpport, "advertise peer url got different port %s, expected %s", apport, lpport)
+	require.Equalf(t, aphost, defaultHostname, "advertise peer url expected machine default host %q, got %q", defaultHostname, aphost)
 	expected := fmt.Sprintf("%s=%s://%s:%s", cfg.Name, oldscheme, defaultHostname, lpport)
-	if expected != cfg.InitialCluster {
-		t.Fatalf("initial-cluster expected %q, got %q", expected, cfg.InitialCluster)
-	}
+	require.Equalf(t, expected, cfg.InitialCluster, "initial-cluster expected %q, got %q", expected, cfg.InitialCluster)
 
 	// advertise client URL should not be affected
-	if origadvc != cfg.ACUrls[0].String() {
-		t.Fatalf("advertise-client-url expected %q, got %q", origadvc, cfg.ACUrls[0].String())
+	require.Equalf(t, origadvc, cfg.AdvertiseClientUrls[0].String(), "advertise-client-url expected %q, got %q", origadvc, cfg.AdvertiseClientUrls[0].String())
+}
+
+func TestInferLocalAddr(t *testing.T) {
+	tests := []struct {
+		name               string
+		advertisePeerURLs  []string
+		setMemberLocalAddr bool
+		expectedLocalAddr  string
+	}{
+		{
+			"defaults, ExperimentalSetMemberLocalAddr=false ",
+			[]string{DefaultInitialAdvertisePeerURLs},
+			false,
+			"",
+		},
+		{
+			"IPv4 address, ExperimentalSetMemberLocalAddr=false ",
+			[]string{"https://192.168.100.110:2380"},
+			false,
+			"",
+		},
+		{
+			"defaults, ExperimentalSetMemberLocalAddr=true",
+			[]string{DefaultInitialAdvertisePeerURLs},
+			true,
+			"",
+		},
+		{
+			"IPv4 unspecified address, ExperimentalSetMemberLocalAddr=true",
+			[]string{"https://0.0.0.0:2380"},
+			true,
+			"",
+		},
+		{
+			"IPv6 unspecified address, ExperimentalSetMemberLocalAddr=true",
+			[]string{"https://[::]:2380"},
+			true,
+			"",
+		},
+		{
+			"IPv4 loopback address, ExperimentalSetMemberLocalAddr=true",
+			[]string{"https://127.0.0.1:2380"},
+			true,
+			"",
+		},
+		{
+			"IPv6 loopback address, ExperimentalSetMemberLocalAddr=true",
+			[]string{"https://[::1]:2380"},
+			true,
+			"",
+		},
+		{
+			"IPv4 address, ExperimentalSetMemberLocalAddr=true",
+			[]string{"https://192.168.100.110:2380"},
+			true,
+			"192.168.100.110",
+		},
+		{
+			"Hostname only, ExperimentalSetMemberLocalAddr=true",
+			[]string{"https://123-host-3.corp.internal:2380"},
+			true,
+			"",
+		},
+		{
+			"Hostname and IPv4 address, ExperimentalSetMemberLocalAddr=true",
+			[]string{"https://123-host-3.corp.internal:2380", "https://192.168.100.110:2380"},
+			true,
+			"192.168.100.110",
+		},
+		{
+			"IPv4 address and Hostname, ExperimentalSetMemberLocalAddr=true",
+			[]string{"https://192.168.100.110:2380", "https://123-host-3.corp.internal:2380"},
+			true,
+			"192.168.100.110",
+		},
+		{
+			"IPv4 and IPv6 addresses, ExperimentalSetMemberLocalAddr=true",
+			[]string{"https://192.168.100.110:2380", "https://[2001:db8:85a3::8a2e:370:7334]:2380"},
+			true,
+			"192.168.100.110",
+		},
+		{
+			"IPv6 and IPv4 addresses, ExperimentalSetMemberLocalAddr=true",
+			// IPv4 addresses will always sort before IPv6 ones anyway
+			[]string{"https://[2001:db8:85a3::8a2e:370:7334]:2380", "https://192.168.100.110:2380"},
+			true,
+			"192.168.100.110",
+		},
+		{
+			"Hostname, IPv4 and IPv6 addresses, ExperimentalSetMemberLocalAddr=true",
+			[]string{"https://123-host-3.corp.internal:2380", "https://192.168.100.110:2380", "https://[2001:db8:85a3::8a2e:370:7334]:2380"},
+			true,
+			"192.168.100.110",
+		},
+		{
+			"Hostname, IPv6 and IPv4 addresses, ExperimentalSetMemberLocalAddr=true",
+			// IPv4 addresses will always sort before IPv6 ones anyway
+			[]string{"https://123-host-3.corp.internal:2380", "https://[2001:db8:85a3::8a2e:370:7334]:2380", "https://192.168.100.110:2380"},
+			true,
+			"192.168.100.110",
+		},
+		{
+			"IPv6 address, ExperimentalSetMemberLocalAddr=true",
+			[]string{"https://[2001:db8:85a3::8a2e:370:7334]:2380"},
+			true,
+			"2001:db8:85a3::8a2e:370:7334",
+		},
+		{
+			"Hostname and IPv6 address, ExperimentalSetMemberLocalAddr=true",
+			[]string{"https://123-host-3.corp.internal:2380", "https://[2001:db8:85a3::8a2e:370:7334]:2380"},
+			true,
+			"2001:db8:85a3::8a2e:370:7334",
+		},
+		{
+			"IPv6 address and Hostname, ExperimentalSetMemberLocalAddr=true",
+			[]string{"https://[2001:db8:85a3::8a2e:370:7334]:2380", "https://123-host-3.corp.internal:2380"},
+			true,
+			"2001:db8:85a3::8a2e:370:7334",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := NewConfig()
+			cfg.AdvertisePeerUrls = types.MustNewURLs(tt.advertisePeerURLs)
+			cfg.ExperimentalSetMemberLocalAddr = tt.setMemberLocalAddr
+
+			require.NoError(t, cfg.Validate())
+			require.Equal(t, tt.expectedLocalAddr, cfg.InferLocalAddr())
+		})
 	}
 }
 
 func (s *securityConfig) equals(t *transport.TLSInfo) bool {
 	return s.CertFile == t.CertFile &&
 		s.CertAuth == t.ClientCertAuth &&
-		s.TrustedCAFile == t.TrustedCAFile
+		s.TrustedCAFile == t.TrustedCAFile &&
+		s.ClientCertFile == t.ClientCertFile &&
+		s.ClientKeyFile == t.ClientKeyFile &&
+		s.KeyFile == t.KeyFile &&
+		compareSlices(s.AllowedCNs, t.AllowedCNs) &&
+		compareSlices(s.AllowedHostnames, t.AllowedHostnames)
+}
+
+func compareSlices(slice1, slice2 []string) bool {
+	if len(slice1) != len(slice2) {
+		return false
+	}
+	for i, v := range slice1 {
+		if v != slice2[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func mustCreateCfgFile(t *testing.T, b []byte) *os.File {
@@ -202,6 +634,11 @@ func TestAutoCompactionModeParse(t *testing.T) {
 		// err mode
 		{"errmode", "1", false, 0},
 		{"errmode", "1h", false, time.Hour},
+		// empty mode
+		{"", "1", true, 0},
+		{"", "1h", false, time.Hour},
+		{"", "a", true, 0},
+		{"", "-1", true, 0},
 	}
 
 	hasErr := func(err error) bool {
@@ -282,7 +719,7 @@ func TestPeerURLsMapAndTokenFromSRV(t *testing.T) {
 		cfg.InitialCluster = ""
 		cfg.InitialClusterToken = ""
 		cfg.DNSCluster = "example.com"
-		cfg.APUrls = types.MustNewURLs(tt.apurls)
+		cfg.AdvertisePeerUrls = types.MustNewURLs(tt.apurls)
 
 		if err := cfg.Validate(); err != nil {
 			t.Errorf("#%d: failed to validate test Config: %v", i, err)
@@ -301,46 +738,31 @@ func TestPeerURLsMapAndTokenFromSRV(t *testing.T) {
 
 func TestLeaseCheckpointValidate(t *testing.T) {
 	tcs := []struct {
-		name        string
-		configFunc  func() Config
-		expectError bool
+		name               string
+		serverFeatureGates string
+		expectError        bool
 	}{
 		{
 			name: "Default config should pass",
-			configFunc: func() Config {
-				return *NewConfig()
-			},
 		},
 		{
-			name: "Enabling checkpoint leases should pass",
-			configFunc: func() Config {
-				cfg := *NewConfig()
-				cfg.ExperimentalEnableLeaseCheckpoint = true
-				return cfg
-			},
+			name:               "Enabling checkpoint leases should pass",
+			serverFeatureGates: "LeaseCheckpoint=true",
 		},
 		{
-			name: "Enabling checkpoint leases and persist should pass",
-			configFunc: func() Config {
-				cfg := *NewConfig()
-				cfg.ExperimentalEnableLeaseCheckpoint = true
-				cfg.ExperimentalEnableLeaseCheckpointPersist = true
-				return cfg
-			},
+			name:               "Enabling checkpoint leases and persist should pass",
+			serverFeatureGates: "LeaseCheckpointPersist=true,LeaseCheckpoint=true",
 		},
 		{
-			name: "Enabling checkpoint leases persist without checkpointing itself should fail",
-			configFunc: func() Config {
-				cfg := *NewConfig()
-				cfg.ExperimentalEnableLeaseCheckpointPersist = true
-				return cfg
-			},
-			expectError: true,
+			name:               "Enabling checkpoint leases persist without checkpointing itself should fail",
+			serverFeatureGates: "LeaseCheckpointPersist=true",
+			expectError:        true,
 		},
 	}
 	for _, tc := range tcs {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := tc.configFunc()
+			cfg := *NewConfig()
+			cfg.ServerFeatureGate.(featuregate.MutableFeatureGate).Set(tc.serverFeatureGates)
 			err := cfg.Validate()
 			if (err != nil) != tc.expectError {
 				t.Errorf("config.Validate() = %q, expected error: %v", err, tc.expectError)
@@ -493,7 +915,7 @@ func TestTLSVersionMinMax(t *testing.T) {
 
 			err := cfg.Validate()
 			if err != nil {
-				assert.True(t, tt.expectError, "Validate() returned error while expecting success: %v", err)
+				assert.Truef(t, tt.expectError, "Validate() returned error while expecting success: %v", err)
 				return
 			}
 
@@ -505,5 +927,123 @@ func TestTLSVersionMinMax(t *testing.T) {
 			assert.Equal(t, tt.expectedMinTLSVersion, cfg.ClientTLSInfo.MinVersion)
 			assert.Equal(t, tt.expectedMaxTLSVersion, cfg.ClientTLSInfo.MaxVersion)
 		})
+	}
+}
+
+func TestUndefinedAutoCompactionModeValidate(t *testing.T) {
+	cfg := *NewConfig()
+	cfg.AutoCompactionMode = ""
+	err := cfg.Validate()
+	require.Error(t, err)
+}
+
+func TestSetFeatureGatesFromExperimentalFlags(t *testing.T) {
+	testCases := []struct {
+		name                                string
+		featureGatesFlag                    string
+		experimentalStopGRPCServiceOnDefrag string
+		expectErr                           bool
+		expectedFeatures                    map[featuregate.Feature]bool
+	}{
+		{
+			name: "default",
+			expectedFeatures: map[featuregate.Feature]bool{
+				features.StopGRPCServiceOnDefrag: false,
+				"TestAlpha":                      false,
+				"TestBeta":                       true,
+			},
+		},
+		{
+			name:                                "cannot set experimental flag and feature gate to true at the same time",
+			featureGatesFlag:                    "StopGRPCServiceOnDefrag=true",
+			experimentalStopGRPCServiceOnDefrag: "true",
+			expectErr:                           true,
+		},
+		{
+			name:                                "cannot set experimental flag and feature gate to false at the same time",
+			featureGatesFlag:                    "StopGRPCServiceOnDefrag=false",
+			experimentalStopGRPCServiceOnDefrag: "false",
+			expectErr:                           true,
+		},
+		{
+			name:                                "cannot set experimental flag and feature gate to different values at the same time",
+			featureGatesFlag:                    "StopGRPCServiceOnDefrag=true",
+			experimentalStopGRPCServiceOnDefrag: "false",
+			expectErr:                           true,
+		},
+		{
+			name:                                "can set experimental flag and other feature gates",
+			featureGatesFlag:                    "TestAlpha=true,TestBeta=false",
+			experimentalStopGRPCServiceOnDefrag: "true",
+			expectedFeatures: map[featuregate.Feature]bool{
+				features.StopGRPCServiceOnDefrag: true,
+				"TestAlpha":                      true,
+				"TestBeta":                       false,
+			},
+		},
+		{
+			name:             "can set feature gate when its experimental flag is not explicitly set",
+			featureGatesFlag: "TestAlpha=true,StopGRPCServiceOnDefrag=true",
+			expectedFeatures: map[featuregate.Feature]bool{
+				features.StopGRPCServiceOnDefrag: true,
+				"TestAlpha":                      true,
+				"TestBeta":                       true,
+			},
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			fg := features.NewDefaultServerFeatureGate("test", nil)
+			err := fg.(featuregate.MutableFeatureGate).Add(
+				map[featuregate.Feature]featuregate.FeatureSpec{
+					"TestAlpha": {Default: false, PreRelease: featuregate.Alpha},
+					"TestBeta":  {Default: true, PreRelease: featuregate.Beta},
+				})
+			require.NoError(t, err)
+
+			fg.(featuregate.MutableFeatureGate).Set(tc.featureGatesFlag)
+			var getExperimentalFlagVal func(flagName string) *bool
+			if tc.experimentalStopGRPCServiceOnDefrag == "" {
+				// experimental flag is not explicitly set
+				getExperimentalFlagVal = func(flagName string) *bool {
+					return nil
+				}
+			} else {
+				// mexperimental flag is explicitly set
+				getExperimentalFlagVal = func(flagName string) *bool {
+					// only the experimental-stop-grpc-service-on-defrag flag can be set in this test.
+					if flagName != "experimental-stop-grpc-service-on-defrag" {
+						return nil
+					}
+					flagVal, parseErr := strconv.ParseBool(tc.experimentalStopGRPCServiceOnDefrag)
+					require.NoError(t, parseErr)
+					return &flagVal
+				}
+			}
+			err = SetFeatureGatesFromExperimentalFlags(fg, getExperimentalFlagVal, tc.featureGatesFlag)
+			if tc.expectErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			for k, v := range tc.expectedFeatures {
+				if fg.Enabled(k) != v {
+					t.Errorf("expected feature gate %s=%v, got %v", k, v, fg.Enabled(k))
+				}
+			}
+		})
+	}
+}
+
+func TestMatchNewConfigAddFlags(t *testing.T) {
+	cfg := NewConfig()
+	fs := flag.NewFlagSet("etcd", flag.ContinueOnError)
+	cfg.AddFlags(fs)
+	require.NoError(t, fs.Parse(nil))
+	// TODO: Reduce number of unexported fields set in config
+	if diff := cmp.Diff(NewConfig(), cfg, cmpopts.IgnoreUnexported(transport.TLSInfo{}, Config{}), cmp.Comparer(func(a, b featuregate.FeatureGate) bool {
+		return a.String() == b.String()
+	})); diff != "" {
+		t.Errorf("Diff: %s", diff)
 	}
 }

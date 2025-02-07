@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/zap/zaptest"
 
 	"go.etcd.io/etcd/pkg/v3/traceutil"
@@ -34,6 +35,7 @@ import (
 func TestHashByRevValue(t *testing.T) {
 	b, _ := betesting.NewDefaultTmpBackend(t)
 	s := NewStore(zaptest.NewLogger(t), b, &lease.FakeLessor{}, StoreConfig{})
+	defer cleanup(s, b)
 
 	var totalRevisions int64 = 1210
 	assert.Less(t, int64(s.cfg.CompactionBatchLimit), totalRevisions)
@@ -74,6 +76,7 @@ func TestHashByRevValue(t *testing.T) {
 func TestHashByRevValueLastRevision(t *testing.T) {
 	b, _ := betesting.NewDefaultTmpBackend(t)
 	s := NewStore(zaptest.NewLogger(t), b, &lease.FakeLessor{}, StoreConfig{})
+	defer cleanup(s, b)
 
 	var totalRevisions int64 = 1210
 	assert.Less(t, int64(s.cfg.CompactionBatchLimit), totalRevisions)
@@ -122,9 +125,9 @@ func testHashByRev(t *testing.T, s *store, rev int64) KeyValueHash {
 		rev = s.Rev()
 	}
 	hash, _, err := s.hashByRev(rev)
-	assert.NoError(t, err, "error on rev %v", rev)
+	require.NoErrorf(t, err, "error on rev %v", rev)
 	_, err = s.Compact(traceutil.TODO(), rev)
-	assert.NoError(t, err, "error on compact %v", rev)
+	assert.NoErrorf(t, err, "error on compact %v", rev)
 	return hash
 }
 
@@ -133,6 +136,7 @@ func testHashByRev(t *testing.T, s *store, rev int64) KeyValueHash {
 func TestCompactionHash(t *testing.T) {
 	b, _ := betesting.NewDefaultTmpBackend(t)
 	s := NewStore(zaptest.NewLogger(t), b, &lease.FakeLessor{}, StoreConfig{})
+	defer cleanup(s, b)
 
 	testutil.TestCompactionHash(context.Background(), t, hashTestCase{s}, s.cfg.CompactionBatchLimit)
 }
@@ -175,7 +179,10 @@ func (tc hashTestCase) Compact(ctx context.Context, rev int64) error {
 
 func TestHasherStore(t *testing.T) {
 	lg := zaptest.NewLogger(t)
-	s := newHashStorage(lg, newFakeStore(lg))
+	store := newFakeStore(lg)
+	s := NewHashStorage(lg, store)
+	defer store.Close()
+
 	var hashes []KeyValueHash
 	for i := 0; i < hashStorageMaxSize; i++ {
 		hash := KeyValueHash{Hash: uint32(i), Revision: int64(i) + 10, CompactRevision: int64(i) + 100}
@@ -202,9 +209,12 @@ func TestHasherStore(t *testing.T) {
 
 func TestHasherStoreFull(t *testing.T) {
 	lg := zaptest.NewLogger(t)
-	s := newHashStorage(lg, newFakeStore(lg))
+	store := newFakeStore(lg)
+	s := NewHashStorage(lg, store)
+	defer store.Close()
+
 	var minRevision int64 = 100
-	var maxRevision = minRevision + hashStorageMaxSize
+	maxRevision := minRevision + hashStorageMaxSize
 	for i := 0; i < hashStorageMaxSize; i++ {
 		s.Store(KeyValueHash{Revision: int64(i) + minRevision})
 	}

@@ -18,9 +18,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
@@ -55,9 +57,7 @@ func TestFailover(t *testing.T) {
 			defer clus.Terminate(t)
 
 			cc, err := integration2.TestTLSInfo.ClientConfig()
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			// Create an etcd client before or after first server down
 			t.Logf("Creating an etcd client [%s]", tc.name)
 			cli, err := tc.testFunc(t, cc, clus)
@@ -119,14 +119,12 @@ func putWithRetries(t *testing.T, cli *clientv3.Client, key, val string, retryCo
 			}
 			return nil
 		}()
-
 		if err != nil {
 			retryCount--
 			if shouldRetry(err) {
 				continue
-			} else {
-				t.Fatal(err)
 			}
+			t.Fatal(err)
 		}
 		break
 	}
@@ -148,18 +146,16 @@ func getWithRetries(t *testing.T, cli *clientv3.Client, key, val string, retryCo
 				t.Fatalf("Expected 1 key, got %d", len(resp.Kvs))
 			}
 			if !bytes.Equal([]byte(val), resp.Kvs[0].Value) {
-				t.Fatalf("Unexpected value, expected: %s, got: %s", val, string(resp.Kvs[0].Value))
+				t.Fatalf("Unexpected value, expected: %s, got: %s", val, resp.Kvs[0].Value)
 			}
 			return nil
 		}()
-
 		if err != nil {
 			retryCount--
 			if shouldRetry(err) {
 				continue
-			} else {
-				t.Fatal(err)
 			}
+			t.Fatal(err)
 		}
 		break
 	}
@@ -167,7 +163,7 @@ func getWithRetries(t *testing.T, cli *clientv3.Client, key, val string, retryCo
 
 func shouldRetry(err error) bool {
 	if clientv3test.IsClientTimeout(err) || clientv3test.IsServerCtxTimeout(err) ||
-		err == rpctypes.ErrTimeout || err == rpctypes.ErrTimeoutDueToLeaderFail {
+		errors.Is(err, rpctypes.ErrTimeout) || errors.Is(err, rpctypes.ErrTimeoutDueToLeaderFail) {
 		return true
 	}
 	return false

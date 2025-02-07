@@ -26,13 +26,13 @@ import (
 	"sync"
 	"time"
 
+	"go.uber.org/zap"
+
 	"go.etcd.io/etcd/client/pkg/v3/fileutil"
 	"go.etcd.io/etcd/pkg/v3/pbutil"
 	"go.etcd.io/etcd/server/v3/storage/wal/walpb"
 	"go.etcd.io/raft/v3"
 	"go.etcd.io/raft/v3/raftpb"
-
-	"go.uber.org/zap"
 )
 
 const (
@@ -126,7 +126,7 @@ func Create(lg *zap.Logger, dirpath string, metadata []byte) (*WAL, error) {
 	}
 
 	p := filepath.Join(tmpdirpath, walName(0, 0))
-	f, err := fileutil.LockFile(p, os.O_WRONLY|os.O_CREATE, fileutil.PrivateFileMode)
+	f, err := createNewWALFile[*fileutil.LockedFile](p, false)
 	if err != nil {
 		lg.Warn(
 			"failed to flock an initial WAL file",
@@ -233,6 +233,31 @@ func Create(lg *zap.Logger, dirpath string, metadata []byte) (*WAL, error) {
 	return w, nil
 }
 
+// createNewWALFile creates a WAL file.
+// To create a locked file, use *fileutil.LockedFile type parameter.
+// To create a standard file, use *os.File type parameter.
+// If forceNew is true, the file will be truncated if it already exists.
+func createNewWALFile[T *os.File | *fileutil.LockedFile](path string, forceNew bool) (T, error) {
+	flag := os.O_WRONLY | os.O_CREATE
+	if forceNew {
+		flag |= os.O_TRUNC
+	}
+
+	if _, isLockedFile := any(T(nil)).(*fileutil.LockedFile); isLockedFile {
+		lockedFile, err := fileutil.LockFile(path, flag, fileutil.PrivateFileMode)
+		if err != nil {
+			return nil, err
+		}
+		return any(lockedFile).(T), nil
+	}
+
+	file, err := os.OpenFile(path, flag, fileutil.PrivateFileMode)
+	if err != nil {
+		return nil, err
+	}
+	return any(file).(T), nil
+}
+
 func (w *WAL) Reopen(lg *zap.Logger, snap walpb.Snapshot) (*WAL, error) {
 	err := w.Close()
 	if err != nil {
@@ -272,7 +297,8 @@ func (w *WAL) renameWAL(tmpdirpath string) (*WAL, error) {
 	// but there is a window between the fork and the exec where another
 	// process holds the lock.
 	if err := os.Rename(tmpdirpath, w.dir); err != nil {
-		if _, ok := err.(*os.LinkError); ok {
+		var linkErr *os.LinkError
+		if errors.As(err, &linkErr) {
 			return w.renameWALUnlock(tmpdirpath)
 		}
 		return nil, err
@@ -438,7 +464,7 @@ func openWALFiles(lg *zap.Logger, dirpath string, names []string, nameIndex int,
 // exists in the log). Such a situation can happen in cases described in figure 7. of the
 // RAFT paper (http://web.stanford.edu/~ouster/cgi-bin/papers/raft-atc14.pdf).
 //
-// ReadAll may return uncommitted yet entries, that are subject to be overriden.
+// ReadAll may return uncommitted yet entries, that are subject to be overridden.
 // Do not apply entries that have index > state.commit, as they are subject to change.
 func (w *WAL) ReadAll() (metadata []byte, state raftpb.HardState, ents []raftpb.Entry, err error) {
 	w.mu.Lock()
@@ -459,13 +485,16 @@ func (w *WAL) ReadAll() (metadata []byte, state raftpb.HardState, ents []raftpb.
 			// 0 <= e.Index-w.start.Index - 1 < len(ents)
 			if e.Index > w.start.Index {
 				// prevent "panic: runtime error: slice bounds out of range [:13038096702221461992] with capacity 0"
-				up := e.Index - w.start.Index - 1
-				if up > uint64(len(ents)) {
-					// return error before append call causes runtime panic
-					return nil, state, nil, ErrSliceOutOfRange
+				offset := e.Index - w.start.Index - 1
+				if offset > uint64(len(ents)) {
+					// return error before append call causes runtime panic.
+					// We still return the continuous WAL entries that have already been read.
+					// Refer to https://github.com/etcd-io/etcd/pull/19038#issuecomment-2557414292.
+					return nil, state, ents, fmt.Errorf("%w, snapshot[Index: %d, Term: %d], current entry[Index: %d, Term: %d], len(ents): %d",
+						ErrSliceOutOfRange, w.start.Index, w.start.Term, e.Index, e.Term, len(ents))
 				}
 				// The line below is potentially overriding some 'uncommitted' entries.
-				ents = append(ents[:up], e)
+				ents = append(ents[:offset], e)
 			}
 			w.enti = e.Index
 
@@ -553,7 +582,7 @@ func (w *WAL) ReadAll() (metadata []byte, state raftpb.HardState, ents []raftpb.
 		// create encoder (chain crc with the decoder), enable appending
 		w.encoder, err = newFileEncoder(w.tail().File, w.decoder.LastCRC())
 		if err != nil {
-			return
+			return nil, state, nil, err
 		}
 	}
 	w.decoder = nil

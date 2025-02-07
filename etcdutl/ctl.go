@@ -26,13 +26,11 @@ const (
 	cliDescription = "An administrative command line tool for etcd3."
 )
 
-var (
-	rootCmd = &cobra.Command{
-		Use:        cliName,
-		Short:      cliDescription,
-		SuggestFor: []string{"etcdutl"},
-	}
-)
+var rootCmd = &cobra.Command{
+	Use:        cliName,
+	Short:      cliDescription,
+	SuggestFor: []string{"etcdutl"},
+}
 
 func init() {
 	rootCmd.PersistentFlags().StringVarP(&etcdutl.OutputFormat, "write-out", "w", "simple", "set the output format (fields, json, protobuf, simple, table)")
@@ -41,9 +39,9 @@ func init() {
 	})
 
 	rootCmd.AddCommand(
-		etcdutl.NewBackupCommand(),
 		etcdutl.NewDefragCommand(),
 		etcdutl.NewSnapshotCommand(),
+		etcdutl.NewHashKVCommand(),
 		etcdutl.NewVersionCommand(),
 		etcdutl.NewCompletionCommand(),
 		etcdutl.NewMigrateCommand(),

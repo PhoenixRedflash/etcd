@@ -42,8 +42,8 @@ const MaxLeaseTTL = 9000000000
 var (
 	forever = time.Time{}
 
-	// maximum number of leases to revoke per second; configurable for tests
-	leaseRevokeRate = 1000
+	// default number of leases to revoke per second; configurable for tests
+	defaultLeaseRevokeRate = 1000
 
 	// maximum number of lease checkpoints recorded to the consensus log per second; configurable for tests
 	leaseCheckpointRate = 1000
@@ -75,7 +75,7 @@ type RangeDeleter func() TxnDelete
 
 // Checkpointer permits checkpointing of lease remaining TTLs to the consensus log. Defined here to
 // avoid circular dependency with mvcc.
-type Checkpointer func(ctx context.Context, lc *pb.LeaseCheckpointRequest)
+type Checkpointer func(ctx context.Context, lc *pb.LeaseCheckpointRequest) error
 
 type LeaseID int64
 
@@ -170,6 +170,9 @@ type lessor struct {
 	// requests for shorter TTLs are extended to the minimum TTL.
 	minLeaseTTL int64
 
+	// maximum number of leases to revoke per second
+	leaseRevokeRate int
+
 	expiredC chan []*Lease
 	// stopC is a channel whose closure indicates that the lessor should be stopped.
 	stopC chan struct{}
@@ -198,6 +201,8 @@ type LessorConfig struct {
 	CheckpointInterval         time.Duration
 	ExpiredLeasesRetryInterval time.Duration
 	CheckpointPersist          bool
+
+	leaseRevokeRate int
 }
 
 func NewLessor(lg *zap.Logger, b backend.Backend, cluster cluster, cfg LessorConfig) Lessor {
@@ -207,11 +212,15 @@ func NewLessor(lg *zap.Logger, b backend.Backend, cluster cluster, cfg LessorCon
 func newLessor(lg *zap.Logger, b backend.Backend, cluster cluster, cfg LessorConfig) *lessor {
 	checkpointInterval := cfg.CheckpointInterval
 	expiredLeaseRetryInterval := cfg.ExpiredLeasesRetryInterval
+	leaseRevokeRate := cfg.leaseRevokeRate
 	if checkpointInterval == 0 {
 		checkpointInterval = defaultLeaseCheckpointInterval
 	}
 	if expiredLeaseRetryInterval == 0 {
 		expiredLeaseRetryInterval = defaultExpiredleaseRetryInterval
+	}
+	if leaseRevokeRate == 0 {
+		leaseRevokeRate = defaultLeaseRevokeRate
 	}
 	l := &lessor{
 		leaseMap:                  make(map[LeaseID]*Lease),
@@ -220,6 +229,7 @@ func newLessor(lg *zap.Logger, b backend.Backend, cluster cluster, cfg LessorCon
 		leaseCheckpointHeap:       make(LeaseQueue, 0),
 		b:                         b,
 		minLeaseTTL:               cfg.MinLeaseTTL,
+		leaseRevokeRate:           leaseRevokeRate,
 		checkpointInterval:        checkpointInterval,
 		expiredLeaseRetryInterval: expiredLeaseRetryInterval,
 		checkpointPersist:         cfg.CheckpointPersist,
@@ -279,22 +289,17 @@ func (le *lessor) Grant(id LeaseID, ttl int64) (*Lease, error) {
 
 	// TODO: when lessor is under high load, it should give out lease
 	// with longer TTL to reduce renew load.
-	l := &Lease{
-		ID:      id,
-		ttl:     ttl,
-		itemSet: make(map[LeaseItem]struct{}),
-		revokec: make(chan struct{}),
-	}
-
-	if l.ttl < le.minLeaseTTL {
-		l.ttl = le.minLeaseTTL
-	}
+	l := NewLease(id, ttl)
 
 	le.mu.Lock()
 	defer le.mu.Unlock()
 
 	if _, ok := le.leaseMap[id]; ok {
 		return nil, ErrLeaseExists
+	}
+
+	if l.ttl < le.minLeaseTTL {
+		l.ttl = le.minLeaseTTL
 	}
 
 	if le.isPrimary() {
@@ -327,11 +332,6 @@ func (le *lessor) Revoke(id LeaseID) error {
 		return ErrLeaseNotFound
 	}
 
-	// We shouldn't delete the lease inside the transaction lock, otherwise
-	// it may lead to deadlock with Grant or Checkpoint operations, which
-	// acquire the le.mu firstly and then the batchTx lock.
-	delete(le.leaseMap, id)
-
 	defer close(l.revokec)
 	// unlock before doing external work
 	le.mu.Unlock()
@@ -350,6 +350,9 @@ func (le *lessor) Revoke(id LeaseID) error {
 		txn.DeleteRange([]byte(key), nil)
 	}
 
+	le.mu.Lock()
+	defer le.mu.Unlock()
+	delete(le.leaseMap, l.ID)
 	// lease deletion needs to be in the same backend transaction with the
 	// kv deletion. Or we might end up with not executing the revoke or not
 	// deleting the keys if etcdserver fails in between.
@@ -429,7 +432,9 @@ func (le *lessor) Renew(id LeaseID) (int64, error) {
 	// By applying a RAFT entry only when the remainingTTL is already set, we limit the number
 	// of RAFT entries written per lease to a max of 2 per checkpoint interval.
 	if clearRemainingTTL {
-		le.cp(context.Background(), &pb.LeaseCheckpointRequest{Checkpoints: []*pb.LeaseCheckpoint{{ID: int64(l.ID), Remaining_TTL: 0}}})
+		if err := le.cp(context.Background(), &pb.LeaseCheckpointRequest{Checkpoints: []*pb.LeaseCheckpoint{{ID: int64(l.ID), Remaining_TTL: 0}}}); err != nil {
+			return -1, err
+		}
 	}
 
 	le.mu.Lock()
@@ -478,7 +483,7 @@ func (le *lessor) Promote(extend time.Duration) {
 		le.scheduleCheckpointIfNeeded(l)
 	}
 
-	if len(le.leaseMap) < leaseRevokeRate {
+	if len(le.leaseMap) < le.leaseRevokeRate {
 		// no possibility of lease pile-up
 		return
 	}
@@ -492,7 +497,7 @@ func (le *lessor) Promote(extend time.Duration) {
 	expires := 0
 	// have fewer expires than the total revoke rate so piled up leases
 	// don't consume the entire revoke limit
-	targetExpiresPerSecond := (3 * leaseRevokeRate) / 4
+	targetExpiresPerSecond := (3 * le.leaseRevokeRate) / 4
 	for _, l := range leases {
 		remaining := l.Remaining()
 		if remaining > nextWindow {
@@ -628,7 +633,7 @@ func (le *lessor) revokeExpiredLeases() {
 	var ls []*Lease
 
 	// rate limit
-	revokeLimit := leaseRevokeRate / 2
+	revokeLimit := le.leaseRevokeRate / 2
 
 	le.mu.RLock()
 	if le.isPrimary() {
@@ -663,7 +668,9 @@ func (le *lessor) checkpointScheduledLeases() {
 		le.mu.Unlock()
 
 		if len(cps) != 0 {
-			le.cp(context.Background(), &pb.LeaseCheckpointRequest{Checkpoints: cps})
+			if err := le.cp(context.Background(), &pb.LeaseCheckpointRequest{Checkpoints: cps}); err != nil {
+				return
+			}
 		}
 		if len(cps) < maxLeaseCheckpointBatchSize {
 			return
@@ -821,13 +828,18 @@ func (le *lessor) initAndRecover() {
 
 // FakeLessor is a fake implementation of Lessor interface.
 // Used for testing only.
-type FakeLessor struct{}
+type FakeLessor struct {
+	LeaseSet map[LeaseID]struct{}
+}
 
 func (fl *FakeLessor) SetRangeDeleter(dr RangeDeleter) {}
 
 func (fl *FakeLessor) SetCheckpointer(cp Checkpointer) {}
 
-func (fl *FakeLessor) Grant(id LeaseID, ttl int64) (*Lease, error) { return nil, nil }
+func (fl *FakeLessor) Grant(id LeaseID, ttl int64) (*Lease, error) {
+	fl.LeaseSet[id] = struct{}{}
+	return nil, nil
+}
 
 func (fl *FakeLessor) Revoke(id LeaseID) error { return nil }
 
@@ -844,7 +856,12 @@ func (fl *FakeLessor) Demote() {}
 
 func (fl *FakeLessor) Renew(id LeaseID) (int64, error) { return 10, nil }
 
-func (fl *FakeLessor) Lookup(id LeaseID) *Lease { return nil }
+func (fl *FakeLessor) Lookup(id LeaseID) *Lease {
+	if _, ok := fl.LeaseSet[id]; ok {
+		return &Lease{ID: id}
+	}
+	return nil
+}
 
 func (fl *FakeLessor) Leases() []*Lease { return nil }
 

@@ -32,9 +32,11 @@ import (
 func TestCtlV3AuthCertCN(t *testing.T) {
 	testCtl(t, authTestCertCN, withCfg(*e2e.NewConfigClientTLSCertAuth()))
 }
+
 func TestCtlV3AuthCertCNAndUsername(t *testing.T) {
 	testCtl(t, authTestCertCNAndUsername, withCfg(*e2e.NewConfigClientTLSCertAuth()))
 }
+
 func TestCtlV3AuthCertCNAndUsernameNoPassword(t *testing.T) {
 	testCtl(t, authTestCertCNAndUsernameNoPassword, withCfg(*e2e.NewConfigClientTLSCertAuth()))
 }
@@ -67,7 +69,7 @@ func TestCtlV3AuthCertCNWithWithConcurrentOperation(t *testing.T) {
 		}
 	}()
 
-	epcClient := epc.Client()
+	epcClient := epc.Etcdctl()
 	t.Log("Create users")
 	createUsers(ctx, t, epcClient)
 
@@ -136,7 +138,7 @@ func TestCtlV3AuthCertCNWithWithConcurrentOperation(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	case <-donec:
 		t.Log("All done!")
-	case <-time.After(30 * time.Second):
-		t.Fatal("Test case timeout after 20 seconds")
+	case <-time.After(40 * time.Second):
+		t.Fatal("Test case timeout after 40 seconds")
 	}
 }

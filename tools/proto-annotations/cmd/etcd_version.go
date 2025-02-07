@@ -15,10 +15,10 @@
 package cmd
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 
 	"github.com/coreos/go-semver/semver"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -27,10 +27,17 @@ import (
 	"go.etcd.io/etcd/server/v3/storage/wal"
 )
 
-var (
-	// externalPackages that are not expected to have etcd version annotation.
-	externalPackages = []string{"io.prometheus.client", "grpc.binarylog.v1", "google.protobuf", "google.rpc", "google.api", "raftpb"}
-)
+// externalPackages that are not expected to have etcd version annotation.
+var externalPackages = []string{
+	"io.prometheus.client",
+	"grpc.binarylog.v1",
+	"google.protobuf",
+	"google.rpc",
+	"google.api",
+	"raftpb",
+	"grpc.gateway.protoc_gen_swagger.options",
+	"grpc.gateway.protoc_gen_openapiv2.options",
+}
 
 // printEtcdVersion writes etcd_version proto annotation to stdout and returns any errors encountered when reading annotation.
 func printEtcdVersion() []error {
@@ -43,7 +50,7 @@ func printEtcdVersion() []error {
 	sort.Slice(annotations, func(i, j int) bool {
 		return annotations[i].fullName < annotations[j].fullName
 	})
-	output := &bytes.Buffer{}
+	output := &strings.Builder{}
 	for _, a := range annotations {
 		newErrs := a.Validate()
 		if len(newErrs) == 0 {

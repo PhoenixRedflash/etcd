@@ -272,11 +272,12 @@ type respRoundTripper struct {
 func newRespRoundTripper(code int, err error) *respRoundTripper {
 	return &respRoundTripper{code: code, err: err}
 }
+
 func (t *respRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.rec != nil {
-		t.rec.Record(testutil.Action{Name: "req", Params: []interface{}{req}})
+		t.rec.Record(testutil.Action{Name: "req", Params: []any{req}})
 	}
 	return &http.Response{StatusCode: t.code, Header: t.header, Body: &nopReadCloser{}}, t.err
 }
@@ -287,7 +288,7 @@ type roundTripperRecorder struct {
 
 func (t *roundTripperRecorder) RoundTrip(req *http.Request) (*http.Response, error) {
 	if t.rec != nil {
-		t.rec.Record(testutil.Action{Name: "req", Params: []interface{}{req}})
+		t.rec.Record(testutil.Action{Name: "req", Params: []any{req}})
 	}
 	return &http.Response{StatusCode: http.StatusNoContent, Body: &nopReadCloser{}}, nil
 }

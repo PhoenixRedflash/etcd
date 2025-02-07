@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"golang.org/x/sync/errgroup"
 
 	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
@@ -38,7 +39,7 @@ func testMoveLeader(t *testing.T, auto bool) {
 	defer clus.Terminate(t)
 
 	oldLeadIdx := clus.WaitLeader(t)
-	oldLeadID := uint64(clus.Members[oldLeadIdx].Server.MemberId())
+	oldLeadID := uint64(clus.Members[oldLeadIdx].Server.MemberID())
 
 	// ensure followers go through leader transition while leadership transfer
 	idc := make(chan uint64)
@@ -56,18 +57,14 @@ func testMoveLeader(t *testing.T, auto bool) {
 		}
 	}
 
-	target := uint64(clus.Members[(oldLeadIdx+1)%3].Server.MemberId())
+	target := uint64(clus.Members[(oldLeadIdx+1)%3].Server.MemberID())
 	if auto {
-		err := clus.Members[oldLeadIdx].Server.TransferLeadership()
-		if err != nil {
-			t.Fatal(err)
-		}
+		err := clus.Members[oldLeadIdx].Server.TryTransferLeadershipOnShutdown()
+		require.NoError(t, err)
 	} else {
 		mvc := integration.ToGRPC(clus.Client(oldLeadIdx)).Maintenance
 		_, err := mvc.MoveLeader(context.TODO(), &pb.MoveLeaderRequest{TargetID: target})
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 	}
 
 	// wait until leader transitions have happened
@@ -108,7 +105,7 @@ func TestMoveLeaderError(t *testing.T) {
 	oldLeadIdx := clus.WaitLeader(t)
 	followerIdx := (oldLeadIdx + 1) % 3
 
-	target := uint64(clus.Members[(oldLeadIdx+2)%3].Server.MemberId())
+	target := uint64(clus.Members[(oldLeadIdx+2)%3].Server.MemberID())
 
 	mvc := integration.ToGRPC(clus.Client(followerIdx)).Maintenance
 	_, err := mvc.MoveLeader(context.TODO(), &pb.MoveLeaderRequest{TargetID: target})
@@ -149,7 +146,7 @@ func TestMoveLeaderToLearnerError(t *testing.T) {
 	}
 }
 
-// TestTransferLeadershipWithLearner ensures TransferLeadership does not timeout due to learner is
+// TestTransferLeadershipWithLearner ensures TryTransferLeadershipOnShutdown does not timeout due to learner is
 // automatically picked by leader as transferee.
 func TestTransferLeadershipWithLearner(t *testing.T) {
 	integration.BeforeTest(t)
@@ -170,9 +167,9 @@ func TestTransferLeadershipWithLearner(t *testing.T) {
 	leaderIdx := clus.WaitLeader(t)
 	errCh := make(chan error, 1)
 	go func() {
-		// note that this cluster has 1 leader and 1 learner. TransferLeadership should return nil.
+		// note that this cluster has 1 leader and 1 learner. TryTransferLeadershipOnShutdown should return nil.
 		// Leadership transfer is skipped in cluster with 1 voting member.
-		errCh <- clus.Members[leaderIdx].Server.TransferLeadership()
+		errCh <- clus.Members[leaderIdx].Server.TryTransferLeadershipOnShutdown()
 	}()
 	select {
 	case err := <-errCh:
@@ -195,15 +192,14 @@ func TestFirstCommitNotification(t *testing.T) {
 	oldLeaderClient := cluster.Client(oldLeaderIdx)
 
 	newLeaderIdx := (oldLeaderIdx + 1) % clusterSize
-	newLeaderId := uint64(cluster.Members[newLeaderIdx].ID())
+	newLeaderID := uint64(cluster.Members[newLeaderIdx].ID())
 
 	notifiers := make(map[int]<-chan struct{}, clusterSize)
 	for i, clusterMember := range cluster.Members {
 		notifiers[i] = clusterMember.Server.FirstCommitInTermNotify()
 	}
 
-	_, err := oldLeaderClient.MoveLeader(context.Background(), newLeaderId)
-
+	_, err := oldLeaderClient.MoveLeader(context.Background(), newLeaderID)
 	if err != nil {
 		t.Errorf("got error during leadership transfer: %v", err)
 	}
@@ -212,7 +208,7 @@ func TestFirstCommitNotification(t *testing.T) {
 	t.Logf("Submitting write to make sure empty and 'foo' index entry was already flushed")
 	cli := cluster.RandClient()
 
-	if _, err := cli.Put(ctx, "foo", "bar"); err != nil {
+	if _, err = cli.Put(ctx, "foo", "bar"); err != nil {
 		t.Fatalf("Failed to put kv pair.")
 	}
 
@@ -225,7 +221,8 @@ func TestFirstCommitNotification(t *testing.T) {
 	group, groupContext := errgroup.WithContext(ctx)
 
 	for i, notifier := range notifiers {
-		member, notifier := cluster.Members[i], notifier
+		member := cluster.Members[i]
+		notifier := notifier
 		group.Go(func() error {
 			return checkFirstCommitNotification(groupContext, t, member, leaderAppliedIndex, notifier)
 		})

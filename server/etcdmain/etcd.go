@@ -15,11 +15,11 @@
 package etcdmain
 
 import (
+	errorspkg "errors"
 	"fmt"
 	"os"
 	"runtime"
 	"strings"
-	"time"
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -64,8 +64,8 @@ func startEtcdOrProxyV2(args []string) {
 	lg.Info("Running: ", zap.Strings("args", args))
 	if err != nil {
 		lg.Warn("failed to verify flags", zap.Error(err))
-		switch err {
-		case embed.ErrUnsetAdvertiseClientURLsFlag:
+		switch {
+		case errorspkg.Is(err, embed.ErrUnsetAdvertiseClientURLsFlag):
 			lg.Warn("advertise client URLs are not set", zap.Error(err))
 		}
 		os.Exit(1)
@@ -130,9 +130,10 @@ func startEtcdOrProxyV2(args []string) {
 	}
 
 	if err != nil {
-		if derr, ok := err.(*errors.DiscoveryError); ok {
-			switch derr.Err {
-			case v2discovery.ErrDuplicateID:
+		var derr *errors.DiscoveryError
+		if errorspkg.As(err, &derr) {
+			switch {
+			case errorspkg.Is(derr.Err, v2discovery.ErrDuplicateID):
 				lg.Warn(
 					"member has been registered with discovery service",
 					zap.String("name", cfg.ec.Name),
@@ -146,7 +147,7 @@ func startEtcdOrProxyV2(args []string) {
 				lg.Warn("check data dir if previous bootstrap succeeded")
 				lg.Warn("or use a new discovery token if previous bootstrap failed")
 
-			case v2discovery.ErrDuplicateName:
+			case errorspkg.Is(derr.Err, v2discovery.ErrDuplicateName):
 				lg.Warn(
 					"member with duplicated name has already been registered",
 					zap.String("discovery-token", cfg.ec.Durl),
@@ -171,7 +172,7 @@ func startEtcdOrProxyV2(args []string) {
 			if cfg.ec.InitialCluster == cfg.ec.InitialClusterFromName(cfg.ec.Name) {
 				lg.Warn("forgot to set --initial-cluster?")
 			}
-			if types.URLs(cfg.ec.APUrls).String() == embed.DefaultInitialAdvertisePeerURLs {
+			if types.URLs(cfg.ec.AdvertisePeerUrls).String() == embed.DefaultInitialAdvertisePeerURLs {
 				lg.Warn("forgot to set --initial-advertise-peer-urls?")
 			}
 			if cfg.ec.InitialCluster == cfg.ec.InitialClusterFromName(cfg.ec.Name) && len(cfg.ec.Durl) == 0 && len(cfg.ec.DiscoveryCfg.Endpoints) == 0 {
@@ -211,8 +212,6 @@ func startEtcd(cfg *embed.Config) (<-chan struct{}, <-chan error, error) {
 	select {
 	case <-e.Server.ReadyNotify(): // wait for e.Server to join the cluster
 	case <-e.Server.StopNotify(): // publish aborted from 'ErrStopped'
-	case <-time.After(cfg.ExperimentalWaitClusterReadyTimeout):
-		e.GetLogger().Warn("startEtcd: timed out waiting for the ready notification")
 	}
 	return e.Server.StopNotify(), e.Err(), nil
 }
@@ -275,6 +274,6 @@ func checkSupportArch() {
 		return
 	}
 
-	lg.Error("running etcd on unsupported architecture since ETCD_UNSUPPORTED_ARCH is set", zap.String("arch", runtime.GOARCH))
+	lg.Error("Refusing to run etcd on unsupported architecture since ETCD_UNSUPPORTED_ARCH is not set", zap.String("arch", runtime.GOARCH))
 	os.Exit(1)
 }

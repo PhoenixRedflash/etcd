@@ -18,7 +18,9 @@ import (
 	"math/rand"
 	"reflect"
 	"testing"
-	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestIntervalTreeInsert tests interval tree insertion.
@@ -54,9 +56,7 @@ func TestIntervalTreeInsert(t *testing.T) {
 
 	tr := ivt.(*intervalTree)
 	visits := tr.visitLevel()
-	if !reflect.DeepEqual(expected, visits) {
-		t.Fatalf("level order expected %v, got %v", expected, visits)
-	}
+	require.Truef(t, reflect.DeepEqual(expected, visits), "level order expected %v, got %v", expected, visits)
 }
 
 // TestIntervalTreeSelfBalanced ensures range tree is self-balanced after inserting ranges to the tree.
@@ -108,13 +108,9 @@ func TestIntervalTreeSelfBalanced(t *testing.T) {
 
 	tr := ivt.(*intervalTree)
 	visits := tr.visitLevel()
-	if !reflect.DeepEqual(expected, visits) {
-		t.Fatalf("level order expected %v, got %v", expected, visits)
-	}
+	require.Truef(t, reflect.DeepEqual(expected, visits), "level order expected %v, got %v", expected, visits)
 
-	if visits[len(visits)-1].depth != 3 {
-		t.Fatalf("expected self-balanced tree with last level 3, but last level got %d", visits[len(visits)-1].depth)
-	}
+	require.Equalf(t, 3, visits[len(visits)-1].depth, "expected self-balanced tree with last level 3, but last level got %d", visits[len(visits)-1].depth)
 }
 
 // TestIntervalTreeDelete ensures delete operation maintains red-black tree properties.
@@ -215,15 +211,11 @@ func TestIntervalTreeDelete(t *testing.T) {
 		{root: NewInt64Interval(953, 954), color: red, left: newInt64EmptyInterval(), right: newInt64EmptyInterval(), depth: 4},
 	}
 	visitsBeforeDelete := tr.visitLevel()
-	if !reflect.DeepEqual(expectedBeforeDelete, visitsBeforeDelete) {
-		t.Fatalf("level order after insertion expected %v, got %v", expectedBeforeDelete, visitsBeforeDelete)
-	}
+	require.Truef(t, reflect.DeepEqual(expectedBeforeDelete, visitsBeforeDelete), "level order after insertion expected %v, got %v", expectedBeforeDelete, visitsBeforeDelete)
 
 	// delete the node "514"
 	range514 := NewInt64Interval(514, 515)
-	if deleted := tr.Delete(NewInt64Interval(514, 515)); !deleted {
-		t.Fatalf("range %v not deleted", range514)
-	}
+	require.Truef(t, tr.Delete(NewInt64Interval(514, 515)), "range %v not deleted", range514)
 
 	expectedAfterDelete514 := []visitedInterval{
 		{root: NewInt64Interval(510, 511), color: black, left: NewInt64Interval(82, 83), right: NewInt64Interval(830, 831), depth: 0},
@@ -247,15 +239,11 @@ func TestIntervalTreeDelete(t *testing.T) {
 		{root: NewInt64Interval(953, 954), color: red, left: newInt64EmptyInterval(), right: newInt64EmptyInterval(), depth: 4},
 	}
 	visitsAfterDelete514 := tr.visitLevel()
-	if !reflect.DeepEqual(expectedAfterDelete514, visitsAfterDelete514) {
-		t.Fatalf("level order after deleting '514' expected %v, got %v", expectedAfterDelete514, visitsAfterDelete514)
-	}
+	require.Truef(t, reflect.DeepEqual(expectedAfterDelete514, visitsAfterDelete514), "level order after deleting '514' expected %v, got %v", expectedAfterDelete514, visitsAfterDelete514)
 
 	// delete the node "11"
 	range11 := NewInt64Interval(11, 12)
-	if deleted := tr.Delete(NewInt64Interval(11, 12)); !deleted {
-		t.Fatalf("range %v not deleted", range11)
-	}
+	require.Truef(t, tr.Delete(NewInt64Interval(11, 12)), "range %v not deleted", range11)
 
 	expectedAfterDelete11 := []visitedInterval{
 		{root: NewInt64Interval(510, 511), color: black, left: NewInt64Interval(383, 384), right: NewInt64Interval(830, 831), depth: 0},
@@ -278,41 +266,25 @@ func TestIntervalTreeDelete(t *testing.T) {
 		{root: NewInt64Interval(953, 954), color: red, left: newInt64EmptyInterval(), right: newInt64EmptyInterval(), depth: 4},
 	}
 	visitsAfterDelete11 := tr.visitLevel()
-	if !reflect.DeepEqual(expectedAfterDelete11, visitsAfterDelete11) {
-		t.Fatalf("level order after deleting '11' expected %v, got %v", expectedAfterDelete11, visitsAfterDelete11)
-	}
+	require.Truef(t, reflect.DeepEqual(expectedAfterDelete11, visitsAfterDelete11), "level order after deleting '11' expected %v, got %v", expectedAfterDelete11, visitsAfterDelete11)
 }
 
 func TestIntervalTreeIntersects(t *testing.T) {
 	ivt := NewIntervalTree()
 	ivt.Insert(NewStringInterval("1", "3"), 123)
 
-	if ivt.Intersects(NewStringPoint("0")) {
-		t.Errorf("contains 0")
-	}
-	if !ivt.Intersects(NewStringPoint("1")) {
-		t.Errorf("missing 1")
-	}
-	if !ivt.Intersects(NewStringPoint("11")) {
-		t.Errorf("missing 11")
-	}
-	if !ivt.Intersects(NewStringPoint("2")) {
-		t.Errorf("missing 2")
-	}
-	if ivt.Intersects(NewStringPoint("3")) {
-		t.Errorf("contains 3")
-	}
+	assert.Falsef(t, ivt.Intersects(NewStringPoint("0")), "contains 0")
+	assert.Truef(t, ivt.Intersects(NewStringPoint("1")), "missing 1")
+	assert.Truef(t, ivt.Intersects(NewStringPoint("11")), "missing 11")
+	assert.Truef(t, ivt.Intersects(NewStringPoint("2")), "missing 2")
+	assert.Falsef(t, ivt.Intersects(NewStringPoint("3")), "contains 3")
 }
 
 func TestIntervalTreeStringAffine(t *testing.T) {
 	ivt := NewIntervalTree()
 	ivt.Insert(NewStringAffineInterval("8", ""), 123)
-	if !ivt.Intersects(NewStringAffinePoint("9")) {
-		t.Errorf("missing 9")
-	}
-	if ivt.Intersects(NewStringAffinePoint("7")) {
-		t.Errorf("contains 7")
-	}
+	assert.Truef(t, ivt.Intersects(NewStringAffinePoint("9")), "missing 9")
+	assert.Falsef(t, ivt.Intersects(NewStringAffinePoint("7")), "contains 7")
 }
 
 func TestIntervalTreeStab(t *testing.T) {
@@ -324,30 +296,14 @@ func TestIntervalTreeStab(t *testing.T) {
 	ivt.Insert(NewStringInterval("0", "3"), 0)
 
 	tr := ivt.(*intervalTree)
-	if tr.root.max.Compare(StringComparable("8")) != 0 {
-		t.Fatalf("wrong root max got %v, expected 8", tr.root.max)
-	}
-	if x := len(ivt.Stab(NewStringPoint("0"))); x != 3 {
-		t.Errorf("got %d, expected 3", x)
-	}
-	if x := len(ivt.Stab(NewStringPoint("1"))); x != 2 {
-		t.Errorf("got %d, expected 2", x)
-	}
-	if x := len(ivt.Stab(NewStringPoint("2"))); x != 1 {
-		t.Errorf("got %d, expected 1", x)
-	}
-	if x := len(ivt.Stab(NewStringPoint("3"))); x != 0 {
-		t.Errorf("got %d, expected 0", x)
-	}
-	if x := len(ivt.Stab(NewStringPoint("5"))); x != 1 {
-		t.Errorf("got %d, expected 1", x)
-	}
-	if x := len(ivt.Stab(NewStringPoint("55"))); x != 1 {
-		t.Errorf("got %d, expected 1", x)
-	}
-	if x := len(ivt.Stab(NewStringPoint("6"))); x != 1 {
-		t.Errorf("got %d, expected 1", x)
-	}
+	require.Equalf(t, 0, tr.root.max.Compare(StringComparable("8")), "wrong root max got %v, expected 8", tr.root.max)
+	assert.Len(t, ivt.Stab(NewStringPoint("0")), 3)
+	assert.Len(t, ivt.Stab(NewStringPoint("1")), 2)
+	assert.Len(t, ivt.Stab(NewStringPoint("2")), 1)
+	assert.Empty(t, ivt.Stab(NewStringPoint("3")))
+	assert.Len(t, ivt.Stab(NewStringPoint("5")), 1)
+	assert.Len(t, ivt.Stab(NewStringPoint("55")), 1)
+	assert.Len(t, ivt.Stab(NewStringPoint("6")), 1)
 }
 
 type xy struct {
@@ -360,7 +316,6 @@ func TestIntervalTreeRandom(t *testing.T) {
 	ivs := make(map[xy]struct{})
 	ivt := NewIntervalTree()
 	maxv := 128
-	rand.Seed(time.Now().UnixNano())
 
 	for i := rand.Intn(maxv) + 1; i != 0; i-- {
 		x, y := int64(rand.Intn(maxv)), int64(rand.Intn(maxv))
@@ -383,22 +338,14 @@ func TestIntervalTreeRandom(t *testing.T) {
 	for ab := range ivs {
 		for xy := range ivs {
 			v := xy.x + int64(rand.Intn(int(xy.y-xy.x)))
-			if slen := len(ivt.Stab(NewInt64Point(v))); slen == 0 {
-				t.Fatalf("expected %v stab non-zero for [%+v)", v, xy)
-			}
-			if !ivt.Intersects(NewInt64Point(v)) {
-				t.Fatalf("did not get %d as expected for [%+v)", v, xy)
-			}
+			require.NotEmptyf(t, ivt.Stab(NewInt64Point(v)), "expected %v stab non-zero for [%+v)", v, xy)
+			require.Truef(t, ivt.Intersects(NewInt64Point(v)), "did not get %d as expected for [%+v)", v, xy)
 		}
-		if !ivt.Delete(NewInt64Interval(ab.x, ab.y)) {
-			t.Errorf("did not delete %v as expected", ab)
-		}
+		assert.Truef(t, ivt.Delete(NewInt64Interval(ab.x, ab.y)), "did not delete %v as expected", ab)
 		delete(ivs, ab)
 	}
 
-	if ivt.Len() != 0 {
-		t.Errorf("got ivt.Len() = %v, expected 0", ivt.Len())
-	}
+	assert.Equalf(t, 0, ivt.Len(), "got ivt.Len() = %v, expected 0", ivt.Len())
 }
 
 // TestIntervalTreeSortedVisit tests that intervals are visited in sorted order.
@@ -439,17 +386,13 @@ func TestIntervalTreeSortedVisit(t *testing.T) {
 		last := tt.ivls[0].Begin
 		count := 0
 		chk := func(iv *IntervalValue) bool {
-			if last.Compare(iv.Ivl.Begin) > 0 {
-				t.Errorf("#%d: expected less than %d, got interval %+v", i, last, iv.Ivl)
-			}
+			assert.LessOrEqualf(t, last.Compare(iv.Ivl.Begin), 0, "#%d: expected less than %d, got interval %+v", i, last, iv.Ivl)
 			last = iv.Ivl.Begin
 			count++
 			return true
 		}
 		ivt.Visit(tt.visitRange, chk)
-		if count != len(tt.ivls) {
-			t.Errorf("#%d: did not cover all intervals. expected %d, got %d", i, len(tt.ivls), count)
-		}
+		assert.Lenf(t, tt.ivls, count, "#%d: did not cover all intervals. expected %d, got %d", i, len(tt.ivls), count)
 	}
 }
 
@@ -490,9 +433,7 @@ func TestIntervalTreeVisitExit(t *testing.T) {
 			count++
 			return tt.f(n)
 		})
-		if count != tt.wcount {
-			t.Errorf("#%d: expected count %d, got %d", i, tt.wcount, count)
-		}
+		assert.Equalf(t, count, tt.wcount, "#%d: expected count %d, got %d", i, tt.wcount, count)
 	}
 }
 
@@ -552,8 +493,7 @@ func TestIntervalTreeContains(t *testing.T) {
 		for _, ivl := range tt.ivls {
 			ivt.Insert(ivl, struct{}{})
 		}
-		if v := ivt.Contains(tt.chkIvl); v != tt.wContains {
-			t.Errorf("#%d: ivt.Contains got %v, expected %v", i, v, tt.wContains)
-		}
+		v := ivt.Contains(tt.chkIvl)
+		assert.Equalf(t, v, tt.wContains, "#%d: ivt.Contains got %v, expected %v", i, v, tt.wContains)
 	}
 }

@@ -17,8 +17,11 @@ package integration
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/client/v3/concurrency"
@@ -152,9 +155,8 @@ func TestElectionFailover(t *testing.T) {
 	}()
 
 	// invoke leader failover
-	if err := ss[0].Close(); err != nil {
-		t.Fatal(err)
-	}
+	err := ss[0].Close()
+	require.NoError(t, err)
 
 	// check new leader
 	e = concurrency.NewElection(ss[2], "test-election")
@@ -169,9 +171,7 @@ func TestElectionFailover(t *testing.T) {
 
 	// leader must ack election (otherwise, Campaign may see closed conn)
 	eer := <-electedErrC
-	if eer != nil {
-		t.Fatal(eer)
-	}
+	require.NoError(t, eer)
 }
 
 // TestElectionSessionRecampaign ensures that campaigning twice on the same election
@@ -189,13 +189,11 @@ func TestElectionSessionRecampaign(t *testing.T) {
 	defer session.Orphan()
 
 	e := concurrency.NewElection(session, "test-elect")
-	if err := e.Campaign(context.TODO(), "abc"); err != nil {
-		t.Fatal(err)
-	}
+	err = e.Campaign(context.TODO(), "abc")
+	require.NoError(t, err)
 	e2 := concurrency.NewElection(session, "test-elect")
-	if err := e2.Campaign(context.TODO(), "def"); err != nil {
-		t.Fatal(err)
-	}
+	err = e2.Campaign(context.TODO(), "def")
+	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.TODO())
 	defer cancel()
@@ -214,22 +212,17 @@ func TestElectionOnPrefixOfExistingKey(t *testing.T) {
 	defer clus.Terminate(t)
 
 	cli := clus.RandClient()
-	if _, err := cli.Put(context.TODO(), "testa", "value"); err != nil {
-		t.Fatal(err)
-	}
+	_, err := cli.Put(context.TODO(), "testa", "value")
+	require.NoError(t, err)
 	s, serr := concurrency.NewSession(cli)
-	if serr != nil {
-		t.Fatal(serr)
-	}
+	require.NoError(t, serr)
 	e := concurrency.NewElection(s, "test")
 	ctx, cancel := context.WithTimeout(context.TODO(), 5*time.Second)
-	err := e.Campaign(ctx, "abc")
+	err = e.Campaign(ctx, "abc")
 	cancel()
-	if err != nil {
-		// after 5 seconds, deadlock results in
-		// 'context deadline exceeded' here.
-		t.Fatal(err)
-	}
+	// after 5 seconds, deadlock results in
+	// 'context deadline exceeded' here.
+	require.NoError(t, err)
 }
 
 // TestElectionOnSessionRestart tests that a quick restart of leader (resulting
@@ -242,20 +235,14 @@ func TestElectionOnSessionRestart(t *testing.T) {
 	cli := clus.RandClient()
 
 	session, err := concurrency.NewSession(cli)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	e := concurrency.NewElection(session, "test-elect")
-	if cerr := e.Campaign(context.TODO(), "abc"); cerr != nil {
-		t.Fatal(cerr)
-	}
+	require.NoError(t, e.Campaign(context.TODO(), "abc"))
 
 	// ensure leader is not lost to waiter on fail-over
 	waitSession, werr := concurrency.NewSession(cli)
-	if werr != nil {
-		t.Fatal(werr)
-	}
+	require.NoError(t, werr)
 	defer waitSession.Orphan()
 	waitCtx, waitCancel := context.WithTimeout(context.TODO(), 5*time.Second)
 	defer waitCancel()
@@ -263,15 +250,11 @@ func TestElectionOnSessionRestart(t *testing.T) {
 
 	// simulate restart by reusing the lease from the old session
 	newSession, nerr := concurrency.NewSession(cli, concurrency.WithLease(session.Lease()))
-	if nerr != nil {
-		t.Fatal(nerr)
-	}
+	require.NoError(t, nerr)
 	defer newSession.Orphan()
 
 	newElection := concurrency.NewElection(newSession, "test-elect")
-	if ncerr := newElection.Campaign(context.TODO(), "def"); ncerr != nil {
-		t.Fatal(ncerr)
-	}
+	require.NoError(t, newElection.Campaign(context.TODO(), "def"))
 
 	ctx, cancel := context.WithTimeout(context.TODO(), 5*time.Second)
 	defer cancel()
@@ -290,23 +273,16 @@ func TestElectionObserveCompacted(t *testing.T) {
 	cli := clus.Client(0)
 
 	session, err := concurrency.NewSession(cli)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer session.Orphan()
 
 	e := concurrency.NewElection(session, "test-elect")
-	if cerr := e.Campaign(context.TODO(), "abc"); cerr != nil {
-		t.Fatal(cerr)
-	}
+	require.NoError(t, e.Campaign(context.TODO(), "abc"))
 
 	presp, perr := cli.Put(context.TODO(), "foo", "bar")
-	if perr != nil {
-		t.Fatal(perr)
-	}
-	if _, cerr := cli.Compact(context.TODO(), presp.Header.Revision); cerr != nil {
-		t.Fatal(cerr)
-	}
+	require.NoError(t, perr)
+	_, cerr := cli.Compact(context.TODO(), presp.Header.Revision)
+	require.NoError(t, cerr)
 
 	v, ok := <-e.Observe(context.TODO())
 	if !ok {
@@ -314,5 +290,114 @@ func TestElectionObserveCompacted(t *testing.T) {
 	}
 	if string(v.Kvs[0].Value) != "abc" {
 		t.Fatalf(`expected leader value "abc", got %q`, string(v.Kvs[0].Value))
+	}
+}
+
+// TestElectionWithAuthEnabled verifies the election interface when auth is enabled.
+// Refer to the discussion in https://github.com/etcd-io/etcd/issues/17502
+func TestElectionWithAuthEnabled(t *testing.T) {
+	integration.BeforeTest(t)
+	clus := integration.NewCluster(t, &integration.ClusterConfig{Size: 1})
+	defer clus.Terminate(t)
+
+	users := []user{
+		{
+			name:     "user1",
+			password: "123",
+			role:     "role1",
+			key:      "/foo1", // prefix /foo1
+			end:      "/foo2",
+		},
+		{
+			name:     "user2",
+			password: "456",
+			role:     "role2",
+			key:      "/bar1", // prefix /bar1
+			end:      "/bar2",
+		},
+	}
+
+	t.Log("Setting rbac info and enable auth.")
+	authSetupUsers(t, integration.ToGRPC(clus.Client(0)).Auth, users)
+	authSetupRoot(t, integration.ToGRPC(clus.Client(0)).Auth)
+
+	c1, c1err := integration.NewClient(t, clientv3.Config{Endpoints: clus.Client(0).Endpoints(), Username: "user1", Password: "123"})
+	require.NoError(t, c1err)
+	defer c1.Close()
+
+	c2, c2err := integration.NewClient(t, clientv3.Config{Endpoints: clus.Client(0).Endpoints(), Username: "user2", Password: "456"})
+	require.NoError(t, c2err)
+	defer c2.Close()
+
+	campaigns := []struct {
+		name      string
+		c         *clientv3.Client
+		pfx       string
+		sleepTime time.Duration // time to sleep before campaigning
+	}{
+		{
+			name: "client1 first campaign",
+			c:    c1,
+			pfx:  "/foo1/a",
+		},
+		{
+			name: "client1 second campaign",
+			c:    c1,
+			pfx:  "/foo1/a",
+		},
+		{
+			name:      "client2 first campaign",
+			c:         c2,
+			pfx:       "/bar1/b",
+			sleepTime: 5 * time.Second,
+		},
+		{
+			name:      "client2 second campaign",
+			c:         c2,
+			pfx:       "/bar1/b",
+			sleepTime: 6 * time.Second,
+		},
+	}
+
+	t.Log("Starting to campaign with multiple users.")
+	var wg sync.WaitGroup
+	errC := make(chan error, 8)
+	doneC := make(chan error)
+	for _, campaign := range campaigns {
+		campaign := campaign
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if campaign.sleepTime > 0 {
+				time.Sleep(campaign.sleepTime)
+			}
+
+			s, serr := concurrency.NewSession(campaign.c, concurrency.WithTTL(10))
+			if serr != nil {
+				errC <- fmt.Errorf("[NewSession] %s: %w", campaign.name, serr)
+			}
+			s.Orphan()
+
+			e := concurrency.NewElection(s, campaign.pfx)
+			eerr := e.Campaign(context.Background(), "whatever")
+			if eerr != nil {
+				errC <- fmt.Errorf("[Campaign] %s: %w", campaign.name, eerr)
+			}
+		}()
+	}
+
+	go func() {
+		t.Log("Waiting for all goroutines to finish.")
+		defer close(doneC)
+		wg.Wait()
+	}()
+
+	select {
+	case err := <-errC:
+		t.Fatalf("Error: %v", err)
+	case <-doneC:
+		t.Log("All goroutine done!")
+	case <-time.After(30 * time.Second):
+		t.Fatal("Timed out")
 	}
 }

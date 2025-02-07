@@ -26,6 +26,7 @@ import (
 	"go.etcd.io/etcd/client/pkg/v3/transport"
 	"go.etcd.io/etcd/client/pkg/v3/types"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/pkg/v3/expect"
 	"go.etcd.io/etcd/tests/v3/framework/e2e"
 )
 
@@ -70,23 +71,19 @@ func testCtlV3MoveLeader(t *testing.T, cfg e2e.EtcdProcessClusterConfig, envVars
 		}
 		var err error
 		tcfg, err = tinfo.ClientConfig()
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 	}
 
 	var leadIdx int
 	var leaderID uint64
 	var transferee uint64
-	for i, ep := range epc.EndpointsV3() {
+	for i, ep := range epc.EndpointsGRPC() {
 		cli, err := clientv3.New(clientv3.Config{
 			Endpoints:   []string{ep},
 			DialTimeout: 3 * time.Second,
 			TLS:         tcfg,
 		})
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		resp, err := cli.Status(ctx, ep)
 		if err != nil {
@@ -117,17 +114,17 @@ func testCtlV3MoveLeader(t *testing.T, cfg e2e.EtcdProcessClusterConfig, envVars
 		expectErr bool
 	}{
 		{ // request to non-leader
-			[]string{cx.epc.EndpointsV3()[(leadIdx+1)%3]},
+			[]string{cx.epc.EndpointsGRPC()[(leadIdx+1)%3]},
 			"no leader endpoint given at ",
 			true,
 		},
 		{ // request to leader
-			[]string{cx.epc.EndpointsV3()[leadIdx]},
+			[]string{cx.epc.EndpointsGRPC()[leadIdx]},
 			fmt.Sprintf("Leadership transferred from %s to %s", types.ID(leaderID), types.ID(transferee)),
 			false,
 		},
 		{ // request to all endpoints
-			cx.epc.EndpointsV3(),
+			cx.epc.EndpointsGRPC(),
 			"Leadership transferred",
 			false,
 		},
@@ -135,11 +132,11 @@ func testCtlV3MoveLeader(t *testing.T, cfg e2e.EtcdProcessClusterConfig, envVars
 	for i, tc := range tests {
 		prefix := cx.prefixArgs(tc.eps)
 		cmdArgs := append(prefix, "move-leader", types.ID(transferee).String())
-		err := e2e.SpawnWithExpectWithEnv(cmdArgs, cx.envMap, tc.expect)
+		err := e2e.SpawnWithExpectWithEnv(cmdArgs, cx.envMap, expect.ExpectedResponse{Value: tc.expect})
 		if tc.expectErr {
 			require.ErrorContains(t, err, tc.expect)
 		} else {
-			require.Nilf(t, err, "#%d: %v", i, err)
+			require.NoErrorf(t, err, "#%d: %v", i, err)
 		}
 	}
 }

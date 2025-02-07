@@ -16,6 +16,7 @@ package mvcc
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"reflect"
@@ -25,6 +26,7 @@ import (
 	"go.uber.org/zap/zaptest"
 
 	"go.etcd.io/etcd/api/v3/mvccpb"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/server/v3/lease"
 	betesting "go.etcd.io/etcd/server/v3/storage/backend/testing"
 )
@@ -32,9 +34,9 @@ import (
 // TestWatcherWatchID tests that each watcher provides unique watchID,
 // and the watched event attaches the correct watchID.
 func TestWatcherWatchID(t *testing.T) {
-	b, tmpPath := betesting.NewDefaultTmpBackend(t)
-	s := WatchableKV(newWatchableStore(zaptest.NewLogger(t), b, &lease.FakeLessor{}, StoreConfig{}))
-	defer cleanup(s, b, tmpPath)
+	b, _ := betesting.NewDefaultTmpBackend(t)
+	s := New(zaptest.NewLogger(t), b, &lease.FakeLessor{}, StoreConfig{})
+	defer cleanup(s, b)
 
 	w := s.NewWatchStream()
 	defer w.Close()
@@ -82,9 +84,9 @@ func TestWatcherWatchID(t *testing.T) {
 }
 
 func TestWatcherRequestsCustomID(t *testing.T) {
-	b, tmpPath := betesting.NewDefaultTmpBackend(t)
-	s := WatchableKV(newWatchableStore(zaptest.NewLogger(t), b, &lease.FakeLessor{}, StoreConfig{}))
-	defer cleanup(s, b, tmpPath)
+	b, _ := betesting.NewDefaultTmpBackend(t)
+	s := New(zaptest.NewLogger(t), b, &lease.FakeLessor{}, StoreConfig{})
+	defer cleanup(s, b)
 
 	w := s.NewWatchStream()
 	defer w.Close()
@@ -107,7 +109,7 @@ func TestWatcherRequestsCustomID(t *testing.T) {
 	for i, tcase := range tt {
 		id, err := w.Watch(tcase.givenID, []byte("foo"), nil, 0)
 		if tcase.expectedErr != nil || err != nil {
-			if err != tcase.expectedErr {
+			if !errors.Is(err, tcase.expectedErr) {
 				t.Errorf("expected get error %q in test case %q, got %q", tcase.expectedErr, i, err)
 			}
 		} else if tcase.expectedID != id {
@@ -119,9 +121,9 @@ func TestWatcherRequestsCustomID(t *testing.T) {
 // TestWatcherWatchPrefix tests if Watch operation correctly watches
 // and returns events with matching prefixes.
 func TestWatcherWatchPrefix(t *testing.T) {
-	b, tmpPath := betesting.NewDefaultTmpBackend(t)
-	s := WatchableKV(newWatchableStore(zaptest.NewLogger(t), b, &lease.FakeLessor{}, StoreConfig{}))
-	defer cleanup(s, b, tmpPath)
+	b, _ := betesting.NewDefaultTmpBackend(t)
+	s := New(zaptest.NewLogger(t), b, &lease.FakeLessor{}, StoreConfig{})
+	defer cleanup(s, b)
 
 	w := s.NewWatchStream()
 	defer w.Close()
@@ -193,17 +195,17 @@ func TestWatcherWatchPrefix(t *testing.T) {
 // TestWatcherWatchWrongRange ensures that watcher with wrong 'end' range
 // does not create watcher, which panics when canceling in range tree.
 func TestWatcherWatchWrongRange(t *testing.T) {
-	b, tmpPath := betesting.NewDefaultTmpBackend(t)
-	s := WatchableKV(newWatchableStore(zaptest.NewLogger(t), b, &lease.FakeLessor{}, StoreConfig{}))
-	defer cleanup(s, b, tmpPath)
+	b, _ := betesting.NewDefaultTmpBackend(t)
+	s := New(zaptest.NewLogger(t), b, &lease.FakeLessor{}, StoreConfig{})
+	defer cleanup(s, b)
 
 	w := s.NewWatchStream()
 	defer w.Close()
 
-	if _, err := w.Watch(0, []byte("foa"), []byte("foa"), 1); err != ErrEmptyWatcherRange {
+	if _, err := w.Watch(0, []byte("foa"), []byte("foa"), 1); !errors.Is(err, ErrEmptyWatcherRange) {
 		t.Fatalf("key == end range given; expected ErrEmptyWatcherRange, got %+v", err)
 	}
-	if _, err := w.Watch(0, []byte("fob"), []byte("foa"), 1); err != ErrEmptyWatcherRange {
+	if _, err := w.Watch(0, []byte("fob"), []byte("foa"), 1); !errors.Is(err, ErrEmptyWatcherRange) {
 		t.Fatalf("key > end range given; expected ErrEmptyWatcherRange, got %+v", err)
 	}
 	// watch request with 'WithFromKey' has empty-byte range end
@@ -214,7 +216,7 @@ func TestWatcherWatchWrongRange(t *testing.T) {
 
 func TestWatchDeleteRange(t *testing.T) {
 	b, tmpPath := betesting.NewDefaultTmpBackend(t)
-	s := newWatchableStore(zaptest.NewLogger(t), b, &lease.FakeLessor{}, StoreConfig{})
+	s := New(zaptest.NewLogger(t), b, &lease.FakeLessor{}, StoreConfig{})
 
 	defer func() {
 		b.Close()
@@ -253,9 +255,9 @@ func TestWatchDeleteRange(t *testing.T) {
 // TestWatchStreamCancelWatcherByID ensures cancel calls the cancel func of the watcher
 // with given id inside watchStream.
 func TestWatchStreamCancelWatcherByID(t *testing.T) {
-	b, tmpPath := betesting.NewDefaultTmpBackend(t)
-	s := WatchableKV(newWatchableStore(zaptest.NewLogger(t), b, &lease.FakeLessor{}, StoreConfig{}))
-	defer cleanup(s, b, tmpPath)
+	b, _ := betesting.NewDefaultTmpBackend(t)
+	s := New(zaptest.NewLogger(t), b, &lease.FakeLessor{}, StoreConfig{})
+	defer cleanup(s, b)
 
 	w := s.NewWatchStream()
 	defer w.Close()
@@ -277,7 +279,7 @@ func TestWatchStreamCancelWatcherByID(t *testing.T) {
 	for i, tt := range tests {
 		gerr := w.Cancel(tt.cancelID)
 
-		if gerr != tt.werr {
+		if !errors.Is(gerr, tt.werr) {
 			t.Errorf("#%d: err = %v, want %v", i, gerr, tt.werr)
 		}
 	}
@@ -290,22 +292,10 @@ func TestWatchStreamCancelWatcherByID(t *testing.T) {
 // TestWatcherRequestProgress ensures synced watcher can correctly
 // report its correct progress.
 func TestWatcherRequestProgress(t *testing.T) {
-	b, tmpPath := betesting.NewDefaultTmpBackend(t)
+	b, _ := betesting.NewDefaultTmpBackend(t)
+	s := newWatchableStore(zaptest.NewLogger(t), b, &lease.FakeLessor{}, StoreConfig{})
 
-	// manually create watchableStore instead of newWatchableStore
-	// because newWatchableStore automatically calls syncWatchers
-	// method to sync watchers in unsynced map. We want to keep watchers
-	// in unsynced to test if syncWatchers works as expected.
-	s := &watchableStore{
-		store:    NewStore(zaptest.NewLogger(t), b, &lease.FakeLessor{}, StoreConfig{}),
-		unsynced: newWatcherGroup(),
-		synced:   newWatcherGroup(),
-	}
-
-	defer func() {
-		s.store.Close()
-		os.Remove(tmpPath)
-	}()
+	defer cleanup(s, b)
 
 	testKey := []byte("foo")
 	notTestKey := []byte("bad")
@@ -330,7 +320,7 @@ func TestWatcherRequestProgress(t *testing.T) {
 	default:
 	}
 
-	s.syncWatchers()
+	s.syncWatchers([]mvccpb.Event{})
 
 	w.RequestProgress(id)
 	wrs := WatchResponse{WatchID: id, Revision: 2}
@@ -344,10 +334,49 @@ func TestWatcherRequestProgress(t *testing.T) {
 	}
 }
 
+func TestWatcherRequestProgressAll(t *testing.T) {
+	b, _ := betesting.NewDefaultTmpBackend(t)
+	s := newWatchableStore(zaptest.NewLogger(t), b, &lease.FakeLessor{}, StoreConfig{})
+
+	defer cleanup(s, b)
+
+	testKey := []byte("foo")
+	notTestKey := []byte("bad")
+	testValue := []byte("bar")
+	s.Put(testKey, testValue, lease.NoLease)
+
+	// Create watch stream with watcher. We will not actually get
+	// any notifications on it specifically, but there needs to be
+	// at least one Watch for progress notifications to get
+	// generated.
+	w := s.NewWatchStream()
+	w.Watch(0, notTestKey, nil, 1)
+
+	w.RequestProgressAll()
+	select {
+	case resp := <-w.Chan():
+		t.Fatalf("unexpected %+v", resp)
+	default:
+	}
+
+	s.syncWatchers([]mvccpb.Event{})
+
+	w.RequestProgressAll()
+	wrs := WatchResponse{WatchID: clientv3.InvalidWatchID, Revision: 2}
+	select {
+	case resp := <-w.Chan():
+		if !reflect.DeepEqual(resp, wrs) {
+			t.Fatalf("got %+v, expect %+v", resp, wrs)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("failed to receive progress")
+	}
+}
+
 func TestWatcherWatchWithFilter(t *testing.T) {
-	b, tmpPath := betesting.NewDefaultTmpBackend(t)
-	s := WatchableKV(newWatchableStore(zaptest.NewLogger(t), b, &lease.FakeLessor{}, StoreConfig{}))
-	defer cleanup(s, b, tmpPath)
+	b, _ := betesting.NewDefaultTmpBackend(t)
+	s := New(zaptest.NewLogger(t), b, &lease.FakeLessor{}, StoreConfig{})
+	defer cleanup(s, b)
 
 	w := s.NewWatchStream()
 	defer w.Close()

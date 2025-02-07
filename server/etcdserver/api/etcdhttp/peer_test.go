@@ -26,9 +26,8 @@ import (
 	"strings"
 	"testing"
 
-	"go.uber.org/zap/zaptest"
-
 	"github.com/coreos/go-semver/semver"
+	"go.uber.org/zap/zaptest"
 
 	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/client/pkg/v3/testutil"
@@ -65,12 +64,15 @@ type fakeServer struct {
 func (s *fakeServer) AddMember(ctx context.Context, memb membership.Member) ([]*membership.Member, error) {
 	return nil, fmt.Errorf("AddMember not implemented in fakeServer")
 }
+
 func (s *fakeServer) RemoveMember(ctx context.Context, id uint64) ([]*membership.Member, error) {
 	return nil, fmt.Errorf("RemoveMember not implemented in fakeServer")
 }
+
 func (s *fakeServer) UpdateMember(ctx context.Context, updateMemb membership.Member) ([]*membership.Member, error) {
 	return nil, fmt.Errorf("UpdateMember not implemented in fakeServer")
 }
+
 func (s *fakeServer) PromoteMember(ctx context.Context, id uint64) ([]*membership.Member, error) {
 	return nil, fmt.Errorf("PromoteMember not implemented in fakeServer")
 }
@@ -104,6 +106,7 @@ func TestNewPeerHandlerOnRaftPrefix(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected io.ReadAll error: %v", err)
 		}
+		resp.Body.Close()
 		if w := "test data"; string(body) != w {
 			t.Errorf("#%d: body = %s, want %s", i, body, w)
 		}
@@ -172,7 +175,7 @@ func TestServeMembersGet(t *testing.T) {
 	}
 
 	for i, tt := range tests {
-		req, err := http.NewRequest("GET", testutil.MustNewURL(t, tt.path).String(), nil)
+		req, err := http.NewRequest(http.MethodGet, testutil.MustNewURL(t, tt.path).String(), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -261,7 +264,7 @@ func TestNewPeerHandlerOnMembersPromotePrefix(t *testing.T) {
 		},
 	}
 	for i, tt := range tests {
-		req, err := http.NewRequest("POST", srv.URL+tt.path, nil)
+		req, err := http.NewRequest(http.MethodPost, srv.URL+tt.path, nil)
 		if err != nil {
 			t.Fatalf("failed to create request: %v", err)
 		}
@@ -278,7 +281,7 @@ func TestNewPeerHandlerOnMembersPromotePrefix(t *testing.T) {
 			t.Fatalf("#%d: code = %d, want %d", i, resp.StatusCode, tt.wcode)
 		}
 		if tt.checkBody && strings.Contains(string(body), tt.wKeyWords) {
-			t.Errorf("#%d: body: %s, want body to contain keywords: %s", i, string(body), tt.wKeyWords)
+			t.Errorf("#%d: body: %s, want body to contain keywords: %s", i, body, tt.wKeyWords)
 		}
 	}
 }

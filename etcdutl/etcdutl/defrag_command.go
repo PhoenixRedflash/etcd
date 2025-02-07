@@ -26,9 +26,7 @@ import (
 	"go.etcd.io/etcd/server/v3/storage/datadir"
 )
 
-var (
-	defragDataDir string
-)
+var defragDataDir string
 
 // NewDefragCommand returns the cobra command for "Defrag".
 func NewDefragCommand() *cobra.Command {
@@ -47,7 +45,7 @@ func defragCommandFunc(cmd *cobra.Command, args []string) {
 	err := DefragData(defragDataDir)
 	if err != nil {
 		cobrautl.ExitWithError(cobrautl.ExitError,
-			fmt.Errorf("Failed to defragment etcd data[%s] (%v)", defragDataDir, err))
+			fmt.Errorf("Failed to defragment etcd data[%s] (%w)", defragDataDir, err))
 	}
 }
 

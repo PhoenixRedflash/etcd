@@ -23,15 +23,13 @@ import (
 	"time"
 
 	"github.com/bgentry/speakeasy"
-
-	"go.etcd.io/etcd/pkg/v3/cobrautl"
+	"github.com/spf13/cobra"
 
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/client/v3/mirror"
-
-	"github.com/spf13/cobra"
+	"go.etcd.io/etcd/pkg/v3/cobrautl"
 )
 
 const (
@@ -112,6 +110,8 @@ func makeMirrorCommandFunc(cmd *cobra.Command, args []string) {
 	dialTimeout := dialTimeoutFromCmd(cmd)
 	keepAliveTime := keepAliveTimeFromCmd(cmd)
 	keepAliveTimeout := keepAliveTimeoutFromCmd(cmd)
+	maxCallSendMsgSize := maxCallSendMsgSizeFromCmd(cmd)
+	maxCallRecvMsgSize := maxCallRecvMsgSizeFromCmd(cmd)
 	sec := &clientv3.SecureConfig{
 		Cert:              mmcert,
 		Key:               mmkey,
@@ -122,12 +122,14 @@ func makeMirrorCommandFunc(cmd *cobra.Command, args []string) {
 	auth := authDestCfg()
 
 	cc := &clientv3.ConfigSpec{
-		Endpoints:        []string{args[0]},
-		DialTimeout:      dialTimeout,
-		KeepAliveTime:    keepAliveTime,
-		KeepAliveTimeout: keepAliveTimeout,
-		Secure:           sec,
-		Auth:             auth,
+		Endpoints:          []string{args[0]},
+		DialTimeout:        dialTimeout,
+		KeepAliveTime:      keepAliveTime,
+		KeepAliveTimeout:   keepAliveTimeout,
+		MaxCallSendMsgSize: maxCallSendMsgSize,
+		MaxCallRecvMsgSize: maxCallRecvMsgSize,
+		Secure:             sec,
+		Auth:               auth,
 	}
 	dc := mustClient(cc)
 	c := mustClientFromCmd(cmd)

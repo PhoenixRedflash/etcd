@@ -19,12 +19,11 @@ import (
 	"fmt"
 	"path"
 
-	"go.etcd.io/etcd/client/pkg/v3/types"
-
-	"go.etcd.io/etcd/server/v3/etcdserver/api/v2store"
-
 	"github.com/coreos/go-semver/semver"
 	"go.uber.org/zap"
+
+	"go.etcd.io/etcd/client/pkg/v3/types"
+	"go.etcd.io/etcd/server/v3/etcdserver/api/v2store"
 )
 
 const (
@@ -57,25 +56,11 @@ func IsMetaStoreOnly(store v2store.Store) (bool, error) {
 	return true, nil
 }
 
-// TrimMembershipFromV2Store removes all information about members &
-// removed_members from the v2 store.
-func TrimMembershipFromV2Store(lg *zap.Logger, s v2store.Store) error {
+func verifyNoMembersInStore(lg *zap.Logger, s v2store.Store) {
 	members, removed := membersFromStore(lg, s)
-
-	for mID := range members {
-		_, err := s.Delete(MemberStoreKey(mID), true, true)
-		if err != nil {
-			return err
-		}
+	if len(members) != 0 || len(removed) != 0 {
+		lg.Panic("store has membership info")
 	}
-	for mID := range removed {
-		_, err := s.Delete(RemovedMemberStoreKey(mID), true, true)
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
 }
 
 func mustSaveMemberToStore(lg *zap.Logger, s v2store.Store, m *Member) {
@@ -101,6 +86,11 @@ func mustDeleteMemberFromStore(lg *zap.Logger, s v2store.Store, id types.ID) {
 			zap.Error(err),
 		)
 	}
+
+	mustAddToRemovedMembersInStore(lg, s, id)
+}
+
+func mustAddToRemovedMembersInStore(lg *zap.Logger, s v2store.Store, id types.ID) {
 	if _, err := s.Create(RemovedMemberStoreKey(id), false, "", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent}); err != nil {
 		lg.Panic(
 			"failed to create removedMember",
@@ -165,14 +155,14 @@ func nodeToMember(lg *zap.Logger, n *v2store.NodeExtern) (*Member, error) {
 	}
 	if data := attrs[raftAttrKey]; data != nil {
 		if err := json.Unmarshal(data, &m.RaftAttributes); err != nil {
-			return nil, fmt.Errorf("unmarshal raftAttributes error: %v", err)
+			return nil, fmt.Errorf("unmarshal raftAttributes error: %w", err)
 		}
 	} else {
 		return nil, fmt.Errorf("raftAttributes key doesn't exist")
 	}
 	if data := attrs[attrKey]; data != nil {
 		if err := json.Unmarshal(data, &m.Attributes); err != nil {
-			return m, fmt.Errorf("unmarshal attributes error: %v", err)
+			return m, fmt.Errorf("unmarshal attributes error: %w", err)
 		}
 	}
 	return m, nil

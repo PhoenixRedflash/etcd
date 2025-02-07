@@ -19,11 +19,11 @@ import (
 	"fmt"
 	"time"
 
-	v3 "go.etcd.io/etcd/client/v3"
-	"go.etcd.io/etcd/pkg/v3/report"
-
 	"github.com/cheggaaa/pb/v3"
 	"github.com/spf13/cobra"
+
+	v3 "go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/pkg/v3/report"
 )
 
 var leaseKeepaliveCmd = &cobra.Command{
@@ -33,16 +33,14 @@ var leaseKeepaliveCmd = &cobra.Command{
 	Run: leaseKeepaliveFunc,
 }
 
-var (
-	leaseKeepaliveTotal int
-)
+var leaseKeepaliveTotal int
 
 func init() {
 	RootCmd.AddCommand(leaseKeepaliveCmd)
 	leaseKeepaliveCmd.Flags().IntVar(&leaseKeepaliveTotal, "total", 10000, "Total number of lease keepalive requests")
 }
 
-func leaseKeepaliveFunc(cmd *cobra.Command, args []string) {
+func leaseKeepaliveFunc(_ *cobra.Command, _ []string) {
 	requests := make(chan struct{})
 	clients := mustCreateClients(totalClients, totalConns)
 

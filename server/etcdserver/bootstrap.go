@@ -63,11 +63,11 @@ func bootstrap(cfg config.ServerConfig) (b *bootstrappedServer, err error) {
 	}
 
 	if terr := fileutil.TouchDirAll(cfg.Logger, cfg.DataDir); terr != nil {
-		return nil, fmt.Errorf("cannot access data directory: %v", terr)
+		return nil, fmt.Errorf("cannot access data directory: %w", terr)
 	}
 
 	if terr := fileutil.TouchDirAll(cfg.Logger, cfg.MemberDir()); terr != nil {
-		return nil, fmt.Errorf("cannot access member directory: %v", terr)
+		return nil, fmt.Errorf("cannot access member directory: %w", terr)
 	}
 	ss := bootstrapSnapshot(cfg)
 	prt, err := rafthttp.NewRoundTripper(cfg.PeerTLSInfo, cfg.PeerDialTimeout())
@@ -85,27 +85,27 @@ func bootstrap(cfg config.ServerConfig) (b *bootstrappedServer, err error) {
 
 	if haveWAL {
 		if err = fileutil.IsDirWriteable(cfg.WALDir()); err != nil {
-			return nil, fmt.Errorf("cannot write to WAL directory: %v", err)
+			return nil, fmt.Errorf("cannot write to WAL directory: %w", err)
 		}
 		bwal = bootstrapWALFromSnapshot(cfg, backend.snapshot)
 	}
 
+	cfg.Logger.Info("bootstrapping cluster")
 	cluster, err := bootstrapCluster(cfg, bwal, prt)
 	if err != nil {
 		backend.Close()
 		return nil, err
 	}
 
-	s, err := bootstrapStorage(cfg, st, backend, bwal, cluster)
-	if err != nil {
-		backend.Close()
-		return nil, err
-	}
+	cfg.Logger.Info("bootstrapping storage")
+	s := bootstrapStorage(cfg, st, backend, bwal, cluster)
 
 	if err = cluster.Finalize(cfg, s); err != nil {
 		backend.Close()
 		return nil, err
 	}
+
+	cfg.Logger.Info("bootstrapping raft")
 	raft := bootstrapRaft(cfg, cluster, s.wal)
 	return &bootstrappedServer{
 		prt:     prt,
@@ -118,7 +118,7 @@ func bootstrap(cfg config.ServerConfig) (b *bootstrappedServer, err error) {
 
 type bootstrappedServer struct {
 	storage *bootstrappedStorage
-	cluster *bootstrapedCluster
+	cluster *bootstrappedCluster
 	raft    *bootstrappedRaft
 	prt     http.RoundTripper
 	ss      *snap.Snapshotter
@@ -150,7 +150,7 @@ func (s *bootstrappedBackend) Close() {
 	s.be.Close()
 }
 
-type bootstrapedCluster struct {
+type bootstrappedCluster struct {
 	remotes []*membership.Member
 	cl      *membership.RaftCluster
 	nodeID  types.ID
@@ -165,7 +165,7 @@ type bootstrappedRaft struct {
 	storage *raft.MemoryStorage
 }
 
-func bootstrapStorage(cfg config.ServerConfig, st v2store.Store, be *bootstrappedBackend, wal *bootstrappedWAL, cl *bootstrapedCluster) (b *bootstrappedStorage, err error) {
+func bootstrapStorage(cfg config.ServerConfig, st v2store.Store, be *bootstrappedBackend, wal *bootstrappedWAL, cl *bootstrappedCluster) *bootstrappedStorage {
 	if wal == nil {
 		wal = bootstrapNewWAL(cfg, cl)
 	}
@@ -174,7 +174,7 @@ func bootstrapStorage(cfg config.ServerConfig, st v2store.Store, be *bootstrappe
 		backend: be,
 		st:      st,
 		wal:     wal,
-	}, nil
+	}
 }
 
 func bootstrapSnapshot(cfg config.ServerConfig) *snap.Snapshotter {
@@ -210,13 +210,13 @@ func bootstrapBackend(cfg config.ServerConfig, haveWAL bool, st v2store.Store, s
 	}()
 	ci.SetBackend(be)
 	schema.CreateMetaBucket(be.BatchTx())
-	if cfg.ExperimentalBootstrapDefragThresholdMegabytes != 0 {
+	if cfg.BootstrapDefragThresholdMegabytes != 0 {
 		err = maybeDefragBackend(cfg, be)
 		if err != nil {
 			return nil, err
 		}
 	}
-	cfg.Logger.Debug("restore consistentIndex", zap.Uint64("index", ci.ConsistentIndex()))
+	cfg.Logger.Info("restore consistentIndex", zap.Uint64("index", ci.ConsistentIndex()))
 
 	// TODO(serathius): Implement schema setup in fresh storage
 	var snapshot *raftpb.Snapshot
@@ -227,6 +227,14 @@ func bootstrapBackend(cfg config.ServerConfig, haveWAL bool, st v2store.Store, s
 		}
 	}
 	if beExist {
+		s1, s2 := be.Size(), be.SizeInUse()
+		cfg.Logger.Info(
+			"recovered v3 backend",
+			zap.Int64("backend-size-bytes", s1),
+			zap.String("backend-size", humanize.Bytes(uint64(s1))),
+			zap.Int64("backend-size-in-use-bytes", s2),
+			zap.String("backend-size-in-use", humanize.Bytes(uint64(s2))),
+		)
 		if err = schema.Validate(cfg.Logger, be.ReadTx()); err != nil {
 			cfg.Logger.Error("Failed to validate schema", zap.Error(err))
 			return nil, err
@@ -246,7 +254,7 @@ func maybeDefragBackend(cfg config.ServerConfig, be backend.Backend) error {
 	size := be.Size()
 	sizeInUse := be.SizeInUse()
 	freeableMemory := uint(size - sizeInUse)
-	thresholdBytes := cfg.ExperimentalBootstrapDefragThresholdMegabytes * 1024 * 1024
+	thresholdBytes := cfg.BootstrapDefragThresholdMegabytes * 1024 * 1024
 	if freeableMemory < thresholdBytes {
 		cfg.Logger.Info("Skipping defragmentation",
 			zap.Int64("current-db-size-bytes", size),
@@ -261,7 +269,7 @@ func maybeDefragBackend(cfg config.ServerConfig, be backend.Backend) error {
 	return be.Defrag()
 }
 
-func bootstrapCluster(cfg config.ServerConfig, bwal *bootstrappedWAL, prt http.RoundTripper) (c *bootstrapedCluster, err error) {
+func bootstrapCluster(cfg config.ServerConfig, bwal *bootstrappedWAL, prt http.RoundTripper) (c *bootstrappedCluster, err error) {
 	switch {
 	case bwal == nil && !cfg.NewCluster:
 		c, err = bootstrapExistingClusterNoWAL(cfg, prt)
@@ -278,43 +286,43 @@ func bootstrapCluster(cfg config.ServerConfig, bwal *bootstrappedWAL, prt http.R
 	return c, nil
 }
 
-func bootstrapExistingClusterNoWAL(cfg config.ServerConfig, prt http.RoundTripper) (*bootstrapedCluster, error) {
+func bootstrapExistingClusterNoWAL(cfg config.ServerConfig, prt http.RoundTripper) (*bootstrappedCluster, error) {
 	if err := cfg.VerifyJoinExisting(); err != nil {
 		return nil, err
 	}
-	cl, err := membership.NewClusterFromURLsMap(cfg.Logger, cfg.InitialClusterToken, cfg.InitialPeerURLsMap, membership.WithMaxLearners(cfg.ExperimentalMaxLearners))
+	cl, err := membership.NewClusterFromURLsMap(cfg.Logger, cfg.InitialClusterToken, cfg.InitialPeerURLsMap, membership.WithMaxLearners(cfg.MaxLearners))
 	if err != nil {
 		return nil, err
 	}
 	existingCluster, gerr := GetClusterFromRemotePeers(cfg.Logger, getRemotePeerURLs(cl, cfg.Name), prt)
 	if gerr != nil {
-		return nil, fmt.Errorf("cannot fetch cluster info from peer urls: %v", gerr)
+		return nil, fmt.Errorf("cannot fetch cluster info from peer urls: %w", gerr)
 	}
 	if err := membership.ValidateClusterAndAssignIDs(cfg.Logger, cl, existingCluster); err != nil {
-		return nil, fmt.Errorf("error validating peerURLs %s: %v", existingCluster, err)
+		return nil, fmt.Errorf("error validating peerURLs %s: %w", existingCluster, err)
 	}
 	if !isCompatibleWithCluster(cfg.Logger, cl, cl.MemberByName(cfg.Name).ID, prt, cfg.ReqTimeout()) {
 		return nil, fmt.Errorf("incompatible with current running cluster")
 	}
 	scaleUpLearners := false
-	if err := membership.ValidateMaxLearnerConfig(cfg.ExperimentalMaxLearners, existingCluster.Members(), scaleUpLearners); err != nil {
+	if err := membership.ValidateMaxLearnerConfig(cfg.MaxLearners, existingCluster.Members(), scaleUpLearners); err != nil {
 		return nil, err
 	}
 	remotes := existingCluster.Members()
 	cl.SetID(types.ID(0), existingCluster.ID())
 	member := cl.MemberByName(cfg.Name)
-	return &bootstrapedCluster{
+	return &bootstrappedCluster{
 		remotes: remotes,
 		cl:      cl,
 		nodeID:  member.ID,
 	}, nil
 }
 
-func bootstrapNewClusterNoWAL(cfg config.ServerConfig, prt http.RoundTripper) (*bootstrapedCluster, error) {
+func bootstrapNewClusterNoWAL(cfg config.ServerConfig, prt http.RoundTripper) (*bootstrappedCluster, error) {
 	if err := cfg.VerifyBootstrap(); err != nil {
 		return nil, err
 	}
-	cl, err := membership.NewClusterFromURLsMap(cfg.Logger, cfg.InitialClusterToken, cfg.InitialPeerURLsMap, membership.WithMaxLearners(cfg.ExperimentalMaxLearners))
+	cl, err := membership.NewClusterFromURLsMap(cfg.Logger, cfg.InitialClusterToken, cfg.InitialPeerURLsMap, membership.WithMaxLearners(cfg.MaxLearners))
 	if err != nil {
 		return nil, err
 	}
@@ -342,20 +350,20 @@ func bootstrapNewClusterNoWAL(cfg config.ServerConfig, prt http.RoundTripper) (*
 		if config.CheckDuplicateURL(urlsmap) {
 			return nil, fmt.Errorf("discovery cluster %s has duplicate url", urlsmap)
 		}
-		if cl, err = membership.NewClusterFromURLsMap(cfg.Logger, cfg.InitialClusterToken, urlsmap, membership.WithMaxLearners(cfg.ExperimentalMaxLearners)); err != nil {
+		if cl, err = membership.NewClusterFromURLsMap(cfg.Logger, cfg.InitialClusterToken, urlsmap, membership.WithMaxLearners(cfg.MaxLearners)); err != nil {
 			return nil, err
 		}
 	}
-	return &bootstrapedCluster{
+	return &bootstrappedCluster{
 		remotes: nil,
 		cl:      cl,
 		nodeID:  m.ID,
 	}, nil
 }
 
-func bootstrapClusterWithWAL(cfg config.ServerConfig, meta *snapshotMetadata) (*bootstrapedCluster, error) {
+func bootstrapClusterWithWAL(cfg config.ServerConfig, meta *snapshotMetadata) (*bootstrappedCluster, error) {
 	if err := fileutil.IsDirWriteable(cfg.MemberDir()); err != nil {
-		return nil, fmt.Errorf("cannot write to member directory: %v", err)
+		return nil, fmt.Errorf("cannot write to member directory: %w", err)
 	}
 
 	if cfg.ShouldDiscover() {
@@ -364,15 +372,15 @@ func bootstrapClusterWithWAL(cfg config.ServerConfig, meta *snapshotMetadata) (*
 			zap.String("wal-dir", cfg.WALDir()),
 		)
 	}
-	cl := membership.NewCluster(cfg.Logger, membership.WithMaxLearners(cfg.ExperimentalMaxLearners))
+	cl := membership.NewCluster(cfg.Logger, membership.WithMaxLearners(cfg.MaxLearners))
 
 	scaleUpLearners := false
-	if err := membership.ValidateMaxLearnerConfig(cfg.ExperimentalMaxLearners, cl.Members(), scaleUpLearners); err != nil {
+	if err := membership.ValidateMaxLearnerConfig(cfg.MaxLearners, cl.Members(), scaleUpLearners); err != nil {
 		return nil, err
 	}
 
 	cl.SetID(meta.nodeID, meta.clusterID)
-	return &bootstrapedCluster{
+	return &bootstrappedCluster{
 		cl:     cl,
 		nodeID: meta.nodeID,
 	}, nil
@@ -414,14 +422,6 @@ func recoverSnapshot(cfg config.ServerConfig, st v2store.Store, be backend.Backe
 		// already been closed in this case, so we should set the backend again.
 		ci.SetBackend(be)
 
-		s1, s2 := be.Size(), be.SizeInUse()
-		cfg.Logger.Info(
-			"recovered v3 backend from snapshot",
-			zap.Int64("backend-size-bytes", s1),
-			zap.String("backend-size", humanize.Bytes(uint64(s1))),
-			zap.Int64("backend-size-in-use-bytes", s2),
-			zap.String("backend-size-in-use", humanize.Bytes(uint64(s2))),
-		)
 		if beExist {
 			// TODO: remove kvindex != 0 checking when we do not expect users to upgrade
 			// etcd from pre-3.0 release.
@@ -442,7 +442,7 @@ func recoverSnapshot(cfg config.ServerConfig, st v2store.Store, be backend.Backe
 	return snapshot, be, nil
 }
 
-func (c *bootstrapedCluster) Finalize(cfg config.ServerConfig, s *bootstrappedStorage) error {
+func (c *bootstrappedCluster) Finalize(cfg config.ServerConfig, s *bootstrappedStorage) error {
 	if !s.wal.haveWAL {
 		c.cl.SetID(c.nodeID, c.cl.ID())
 	}
@@ -457,15 +457,15 @@ func (c *bootstrapedCluster) Finalize(cfg config.ServerConfig, s *bootstrappedSt
 		}
 	}
 	scaleUpLearners := false
-	return membership.ValidateMaxLearnerConfig(cfg.ExperimentalMaxLearners, c.cl.Members(), scaleUpLearners)
+	return membership.ValidateMaxLearnerConfig(cfg.MaxLearners, c.cl.Members(), scaleUpLearners)
 }
 
-func (c *bootstrapedCluster) databaseFileMissing(s *bootstrappedStorage) bool {
+func (c *bootstrappedCluster) databaseFileMissing(s *bootstrappedStorage) bool {
 	v3Cluster := c.cl.Version() != nil && !c.cl.Version().LessThan(semver.Version{Major: 3})
 	return v3Cluster && !s.backend.beExist
 }
 
-func bootstrapRaft(cfg config.ServerConfig, cluster *bootstrapedCluster, bwal *bootstrappedWAL) *bootstrappedRaft {
+func bootstrapRaft(cfg config.ServerConfig, cluster *bootstrappedCluster, bwal *bootstrappedWAL) *bootstrappedRaft {
 	switch {
 	case !bwal.haveWAL && !cfg.NewCluster:
 		return bootstrapRaftFromCluster(cfg, cluster.cl, nil, bwal)
@@ -631,7 +631,7 @@ type snapshotMetadata struct {
 	nodeID, clusterID types.ID
 }
 
-func bootstrapNewWAL(cfg config.ServerConfig, cl *bootstrapedCluster) *bootstrappedWAL {
+func bootstrapNewWAL(cfg config.ServerConfig, cl *bootstrappedCluster) *bootstrappedWAL {
 	metadata := pbutil.MustMarshal(
 		&etcdserverpb.Metadata{
 			NodeID:    uint64(cl.nodeID),
@@ -694,7 +694,7 @@ func (wal *bootstrappedWAL) CommitedEntries() []raftpb.Entry {
 func (wal *bootstrappedWAL) NewConfigChangeEntries() []raftpb.Entry {
 	return serverstorage.CreateConfigChangeEnts(
 		wal.lg,
-		serverstorage.GetEffectiveNodeIDsFromWalEntries(wal.lg, wal.snapshot, wal.ents),
+		serverstorage.GetEffectiveNodeIDsFromWALEntries(wal.lg, wal.snapshot, wal.ents),
 		uint64(wal.meta.nodeID),
 		wal.st.Term,
 		wal.st.Commit,

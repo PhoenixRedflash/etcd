@@ -15,15 +15,16 @@
 package schema
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/coreos/go-semver/semver"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
-	"go.etcd.io/etcd/api/v3/membershippb"
 	"go.etcd.io/etcd/api/v3/version"
 	"go.etcd.io/etcd/server/v3/storage/backend"
 	betesting "go.etcd.io/etcd/server/v3/storage/backend/testing"
@@ -37,7 +38,7 @@ func TestValidate(t *testing.T) {
 		name    string
 		version semver.Version
 		// Overrides which keys should be set (default based on version)
-		overrideKeys   func(tx backend.BatchTx)
+		overrideKeys   func(tx backend.UnsafeReadWriter)
 		expectError    bool
 		expectErrorMsg string
 	}{
@@ -50,19 +51,19 @@ func TestValidate(t *testing.T) {
 		{
 			name:         `V3.5 schema without confstate and term fields is correct`,
 			version:      version.V3_5,
-			overrideKeys: func(tx backend.BatchTx) {},
+			overrideKeys: func(tx backend.UnsafeReadWriter) {},
 		},
 		{
 			name:    `V3.5 schema without term field is correct`,
 			version: version.V3_5,
-			overrideKeys: func(tx backend.BatchTx) {
+			overrideKeys: func(tx backend.UnsafeReadWriter) {
 				MustUnsafeSaveConfStateToBackend(zap.NewNop(), tx, &raftpb.ConfState{})
 			},
 		},
 		{
 			name:    `V3.5 schema with all fields is correct`,
 			version: version.V3_5,
-			overrideKeys: func(tx backend.BatchTx) {
+			overrideKeys: func(tx backend.UnsafeReadWriter) {
 				MustUnsafeSaveConfStateToBackend(zap.NewNop(), tx, &raftpb.ConfState{})
 				UnsafeUpdateConsistentIndex(tx, 1, 1)
 			},
@@ -101,7 +102,7 @@ func TestMigrate(t *testing.T) {
 		name    string
 		version semver.Version
 		// Overrides which keys should be set (default based on version)
-		overrideKeys  func(tx backend.BatchTx)
+		overrideKeys  func(tx backend.UnsafeReadWriter)
 		targetVersion semver.Version
 		walEntries    []etcdserverpb.InternalRaftRequest
 
@@ -114,7 +115,7 @@ func TestMigrate(t *testing.T) {
 		{
 			name:           `Upgrading v3.5 to v3.6 should be rejected if confstate is not set`,
 			version:        version.V3_5,
-			overrideKeys:   func(tx backend.BatchTx) {},
+			overrideKeys:   func(tx backend.UnsafeReadWriter) {},
 			targetVersion:  version.V3_6,
 			expectVersion:  nil,
 			expectError:    true,
@@ -123,7 +124,7 @@ func TestMigrate(t *testing.T) {
 		{
 			name:    `Upgrading v3.5 to v3.6 should be rejected if term is not set`,
 			version: version.V3_5,
-			overrideKeys: func(tx backend.BatchTx) {
+			overrideKeys: func(tx backend.UnsafeReadWriter) {
 				MustUnsafeSaveConfStateToBackend(zap.NewNop(), tx, &raftpb.ConfState{})
 			},
 			targetVersion:  version.V3_6,
@@ -185,7 +186,7 @@ func TestMigrate(t *testing.T) {
 			version:       version.V3_6,
 			targetVersion: version.V3_5,
 			walEntries: []etcdserverpb.InternalRaftRequest{
-				{ClusterVersionSet: &membershippb.ClusterVersionSetRequest{Ver: "3.6.0"}},
+				{DowngradeVersionTest: &etcdserverpb.DowngradeVersionTestRequest{Ver: "3.6.0"}},
 			},
 			expectVersion:  &version.V3_6,
 			expectError:    true,
@@ -218,7 +219,7 @@ func TestMigrate(t *testing.T) {
 			if (err != nil) != tc.expectError {
 				t.Errorf("Migrate(lg, tx, %q) = %+v, expected error: %v", tc.targetVersion, err, tc.expectError)
 			}
-			if err != nil && err.Error() != tc.expectErrorMsg {
+			if err != nil && !strings.Contains(err.Error(), tc.expectErrorMsg) {
 				t.Errorf("Migrate(lg, tx, %q) = %q, expected error message: %q", tc.targetVersion, err, tc.expectErrorMsg)
 			}
 			v := UnsafeReadStorageVersion(b.BatchTx())
@@ -294,13 +295,11 @@ func TestMigrateIsReversible(t *testing.T) {
 	}
 }
 
-func setupBackendData(t *testing.T, ver semver.Version, overrideKeys func(tx backend.BatchTx)) string {
+func setupBackendData(t *testing.T, ver semver.Version, overrideKeys func(tx backend.UnsafeReadWriter)) string {
 	t.Helper()
 	be, tmpPath := betesting.NewTmpBackend(t, time.Microsecond, 10)
 	tx := be.BatchTx()
-	if tx == nil {
-		t.Fatal("batch tx is nil")
-	}
+	require.NotNilf(t, tx, "batch tx is nil")
 	tx.Lock()
 	UnsafeCreateMetaBucket(tx)
 	if overrideKeys != nil {

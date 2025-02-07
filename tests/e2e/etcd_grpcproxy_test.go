@@ -48,7 +48,8 @@ func TestGrpcProxyAutoSync(t *testing.T) {
 	)
 
 	// Run independent grpc-proxy instance
-	proxyProc, err := e2e.SpawnCmd([]string{e2e.BinPath.Etcd, "grpc-proxy", "start",
+	proxyProc, err := e2e.SpawnCmd([]string{
+		e2e.BinPath.Etcd, "grpc-proxy", "start",
 		"--advertise-client-url", proxyClientURL, "--listen-addr", proxyClientURL,
 		"--endpoints", node1ClientURL,
 		"--endpoints-auto-sync-interval", "1s",
@@ -64,7 +65,7 @@ func TestGrpcProxyAutoSync(t *testing.T) {
 	require.NoError(t, err)
 
 	// Add and start second member
-	err = epc.StartNewProc(ctx, nil, t)
+	_, err = epc.StartNewProc(ctx, nil, t, false /* addAsLearner */)
 	require.NoError(t, err)
 
 	// Wait for auto sync of endpoints
@@ -90,6 +91,45 @@ func TestGrpcProxyAutoSync(t *testing.T) {
 	assert.Equal(t, []testutils.KV{{Key: "k1", Val: "v1"}}, kvs)
 }
 
+func TestGrpcProxyTLSVersions(t *testing.T) {
+	e2e.SkipInShortMode(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	epc, err := e2e.NewEtcdProcessCluster(ctx, t, e2e.WithClusterSize(1))
+	require.NoError(t, err)
+	defer func() {
+		assert.NoError(t, epc.Close())
+	}()
+
+	var (
+		node1ClientURL = epc.Procs[0].Config().ClientURL
+		proxyClientURL = "127.0.0.1:42379"
+	)
+
+	// Run independent grpc-proxy instance
+	proxyProc, err := e2e.SpawnCmd([]string{
+		e2e.BinPath.Etcd, "grpc-proxy", "start",
+		"--advertise-client-url", proxyClientURL,
+		"--listen-addr", proxyClientURL,
+		"--endpoints", node1ClientURL,
+		"--endpoints-auto-sync-interval", "1s",
+		"--cert-file", e2e.CertPath2,
+		"--key-file", e2e.PrivateKeyPath2,
+		"--tls-min-version", "TLS1.2",
+		"--tls-max-version", "TLS1.3",
+	}, nil)
+	require.NoError(t, err)
+	defer func() {
+		assert.NoError(t, proxyProc.Stop())
+	}()
+
+	_, err = proxyProc.ExpectFunc(ctx, func(s string) bool {
+		return strings.Contains(s, "started gRPC proxy")
+	})
+	require.NoError(t, err)
+}
+
 func waitForEndpointInLog(ctx context.Context, proxyProc *expect.ExpectProcess, endpoint string) error {
 	endpoint = strings.Replace(endpoint, "http://", "", 1)
 
@@ -97,10 +137,7 @@ func waitForEndpointInLog(ctx context.Context, proxyProc *expect.ExpectProcess, 
 	defer cancel()
 
 	_, err := proxyProc.ExpectFunc(ctx, func(s string) bool {
-		if strings.Contains(s, endpoint) {
-			return true
-		}
-		return false
+		return strings.Contains(s, endpoint)
 	})
 
 	return err
