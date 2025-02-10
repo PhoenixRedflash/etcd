@@ -21,6 +21,7 @@ import (
 	"github.com/coreos/go-semver/semver"
 	"github.com/golang/protobuf/proto"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
@@ -34,8 +35,11 @@ func TestEtcdVersionFromEntry(t *testing.T) {
 	raftReq := etcdserverpb.InternalRaftRequest{Header: &etcdserverpb.RequestHeader{AuthRevision: 1}}
 	normalRequestData := pbutil.MustMarshal(&raftReq)
 
-	clusterVersionV3_6Req := etcdserverpb.InternalRaftRequest{ClusterVersionSet: &membershippb.ClusterVersionSetRequest{Ver: "3.6.0"}}
-	clusterVersionV3_6Data := pbutil.MustMarshal(&clusterVersionV3_6Req)
+	downgradeVersionTestV3_6Req := etcdserverpb.InternalRaftRequest{DowngradeVersionTest: &etcdserverpb.DowngradeVersionTestRequest{Ver: "3.6.0"}}
+	downgradeVersionTestV3_6Data := pbutil.MustMarshal(&downgradeVersionTestV3_6Req)
+
+	downgradeVersionTestV3_7Req := etcdserverpb.InternalRaftRequest{DowngradeVersionTest: &etcdserverpb.DowngradeVersionTestRequest{Ver: "3.7.0"}}
+	downgradeVersionTestV3_7Data := pbutil.MustMarshal(&downgradeVersionTestV3_7Req)
 
 	confChange := raftpb.ConfChange{Type: raftpb.ConfChangeAddLearnerNode}
 	confChangeData := pbutil.MustMarshal(&confChange)
@@ -59,14 +63,24 @@ func TestEtcdVersionFromEntry(t *testing.T) {
 			expect: &version.V3_1,
 		},
 		{
-			name: "Setting cluster version implies version within",
+			name: "Setting downgradeTest version to 3.6 implies version within WAL",
 			input: raftpb.Entry{
 				Term:  1,
 				Index: 2,
 				Type:  raftpb.EntryNormal,
-				Data:  clusterVersionV3_6Data,
+				Data:  downgradeVersionTestV3_6Data,
 			},
 			expect: &version.V3_6,
+		},
+		{
+			name: "Setting downgradeTest version to 3.7 implies version within WAL",
+			input: raftpb.Entry{
+				Term:  1,
+				Index: 2,
+				Type:  raftpb.EntryNormal,
+				Data:  downgradeVersionTestV3_7Data,
+			},
+			expect: &version.V3_7,
 		},
 		{
 			name: "Using ConfigChange implies v3.0",
@@ -96,7 +110,7 @@ func TestEtcdVersionFromEntry(t *testing.T) {
 				maxVer = maxVersion(maxVer, ver)
 				return nil
 			})
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			assert.Equal(t, tc.expect, maxVer)
 		})
 	}
@@ -166,7 +180,7 @@ func TestEtcdVersionFromMessage(t *testing.T) {
 				maxVer = maxVersion(maxVer, ver)
 				return nil
 			})
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			assert.Equal(t, tc.expect, maxVer)
 		})
 	}
@@ -242,7 +256,7 @@ func TestEtcdVersionFromFieldOptionsString(t *testing.T) {
 	for _, tc := range tcs {
 		t.Run(tc.input, func(t *testing.T) {
 			ver, err := etcdVersionFromOptionsString(tc.input)
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			assert.Equal(t, ver, tc.expect)
 		})
 	}

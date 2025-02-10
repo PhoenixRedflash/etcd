@@ -18,13 +18,14 @@ import (
 	"sync"
 	"time"
 
+	"go.uber.org/zap"
+
 	"go.etcd.io/etcd/api/v3/mvccpb"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/pkg/v3/traceutil"
 	"go.etcd.io/etcd/server/v3/lease"
 	"go.etcd.io/etcd/server/v3/storage/backend"
 	"go.etcd.io/etcd/server/v3/storage/schema"
-
-	"go.uber.org/zap"
 )
 
 // non-const so modifiable by tests
@@ -38,9 +39,12 @@ var (
 	maxWatchersPerSync = 512
 )
 
+func ChanBufLen() int { return chanBufLen }
+
 type watchable interface {
 	watch(key, end []byte, startRev int64, id WatchID, ch chan<- WatchResponse, fcs ...FilterFunc) (*watcher, cancelFunc)
 	progress(w *watcher)
+	progressAll(watchers map[WatchID]*watcher) bool
 	rev() int64
 }
 
@@ -66,12 +70,18 @@ type watchableStore struct {
 	wg    sync.WaitGroup
 }
 
+var _ WatchableKV = (*watchableStore)(nil)
+
 // cancelFunc updates unsynced and synced maps when running
 // cancel operations.
 type cancelFunc func()
 
 func New(lg *zap.Logger, b backend.Backend, le lease.Lessor, cfg StoreConfig) WatchableKV {
-	return newWatchableStore(lg, b, le, cfg)
+	s := newWatchableStore(lg, b, le, cfg)
+	s.wg.Add(2)
+	go s.syncWatchersLoop()
+	go s.syncVictimsLoop()
+	return s
 }
 
 func newWatchableStore(lg *zap.Logger, b backend.Backend, le lease.Lessor, cfg StoreConfig) *watchableStore {
@@ -91,9 +101,6 @@ func newWatchableStore(lg *zap.Logger, b backend.Backend, le lease.Lessor, cfg S
 		// use this store as the deleter so revokes trigger watch events
 		s.le.SetRangeDeleter(func() lease.TxnDelete { return s.Write(traceutil.TODO()) })
 	}
-	s.wg.Add(2)
-	go s.syncWatchersLoop()
-	go s.syncVictimsLoop()
 	return s
 }
 
@@ -214,6 +221,7 @@ func (s *watchableStore) syncWatchersLoop() {
 	waitDuration := 100 * time.Millisecond
 	delayTicker := time.NewTicker(waitDuration)
 	defer delayTicker.Stop()
+	var evs []mvccpb.Event
 
 	for {
 		s.mu.RLock()
@@ -223,7 +231,7 @@ func (s *watchableStore) syncWatchersLoop() {
 
 		unsyncedWatchers := 0
 		if lastUnsyncedWatchers > 0 {
-			unsyncedWatchers = s.syncWatchers()
+			unsyncedWatchers, evs = s.syncWatchers(evs)
 		}
 		syncDuration := time.Since(st)
 
@@ -282,15 +290,14 @@ func (s *watchableStore) moveVictims() (moved int) {
 		for w, eb := range wb {
 			// watcher has observed the store up to, but not including, w.minRev
 			rev := w.minRev - 1
-			if w.send(WatchResponse{WatchID: w.id, Events: eb.evs, Revision: rev}) {
-				pendingEventsGauge.Add(float64(len(eb.evs)))
-			} else {
+			if !w.send(WatchResponse{WatchID: w.id, Events: eb.evs, Revision: rev}) {
 				if newVictim == nil {
 					newVictim = make(watcherBatch)
 				}
 				newVictim[w] = eb
 				continue
 			}
+			pendingEventsGauge.Add(float64(len(eb.evs)))
 			moved++
 		}
 
@@ -332,12 +339,12 @@ func (s *watchableStore) moveVictims() (moved int) {
 //  2. iterate over the set to get the minimum revision and remove compacted watchers
 //  3. use minimum revision to get all key-value pairs and send those events to watchers
 //  4. remove synced watchers in set from unsynced group and move to synced group
-func (s *watchableStore) syncWatchers() int {
+func (s *watchableStore) syncWatchers(evs []mvccpb.Event) (int, []mvccpb.Event) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.unsynced.size() == 0 {
-		return 0
+		return 0, []mvccpb.Event{}
 	}
 
 	s.store.revMu.RLock()
@@ -350,24 +357,16 @@ func (s *watchableStore) syncWatchers() int {
 	compactionRev := s.store.compactMainRev
 
 	wg, minRev := s.unsynced.choose(maxWatchersPerSync, curRev, compactionRev)
-	minBytes, maxBytes := newRevBytes(), newRevBytes()
-	revToBytes(revision{main: minRev}, minBytes)
-	revToBytes(revision{main: curRev + 1}, maxBytes)
-
-	// UnsafeRange returns keys and values. And in boltdb, keys are revisions.
-	// values are actual key-value pairs in backend.
-	tx := s.store.b.ReadTx()
-	tx.RLock()
-	revs, vs := tx.UnsafeRange(schema.Key, minBytes, maxBytes, 0)
-	evs := kvsToEvents(s.store.lg, wg, revs, vs)
-	// Must unlock after kvsToEvents, because vs (come from boltdb memory) is not deep copy.
-	// We can only unlock after Unmarshal, which will do deep copy.
-	// Otherwise we will trigger SIGSEGV during boltdb re-mmap.
-	tx.RUnlock()
+	evs = rangeEventsWithReuse(s.store.lg, s.store.b, evs, minRev, curRev+1)
 
 	victims := make(watcherBatch)
 	wb := newWatcherBatch(wg, evs)
 	for w := range wg.watchers {
+		if w.minRev < compactionRev {
+			// Skip the watcher that failed to send compacted watch response due to w.ch is full.
+			// Next retry of syncWatchers would try to resend the compacted watch response to w.ch
+			continue
+		}
 		w.minRev = curRev + 1
 
 		eb, ok := wb[w]
@@ -407,26 +406,73 @@ func (s *watchableStore) syncWatchers() int {
 	}
 	slowWatcherGauge.Set(float64(s.unsynced.size() + vsz))
 
-	return s.unsynced.size()
+	return s.unsynced.size(), evs
+}
+
+// rangeEventsWithReuse returns events in range [minRev, maxRev), while reusing already provided events.
+func rangeEventsWithReuse(lg *zap.Logger, b backend.Backend, evs []mvccpb.Event, minRev, maxRev int64) []mvccpb.Event {
+	if len(evs) == 0 {
+		return rangeEvents(lg, b, minRev, maxRev)
+	}
+	// append from left
+	if evs[0].Kv.ModRevision > minRev {
+		evs = append(rangeEvents(lg, b, minRev, evs[0].Kv.ModRevision), evs...)
+	}
+	// cut from left
+	prefixIndex := 0
+	for prefixIndex < len(evs) && evs[prefixIndex].Kv.ModRevision < minRev {
+		prefixIndex++
+	}
+	evs = evs[prefixIndex:]
+
+	if len(evs) == 0 {
+		return rangeEvents(lg, b, minRev, maxRev)
+	}
+	// append from right
+	if evs[len(evs)-1].Kv.ModRevision+1 < maxRev {
+		evs = append(evs, rangeEvents(lg, b, evs[len(evs)-1].Kv.ModRevision+1, maxRev)...)
+	}
+	// cut from right
+	suffixIndex := len(evs) - 1
+	for suffixIndex >= 0 && evs[suffixIndex].Kv.ModRevision >= maxRev {
+		suffixIndex--
+	}
+	evs = evs[:suffixIndex+1]
+	return evs
+}
+
+// rangeEvents returns events in range [minRev, maxRev).
+func rangeEvents(lg *zap.Logger, b backend.Backend, minRev, maxRev int64) []mvccpb.Event {
+	minBytes, maxBytes := NewRevBytes(), NewRevBytes()
+	minBytes = RevToBytes(Revision{Main: minRev}, minBytes)
+	maxBytes = RevToBytes(Revision{Main: maxRev}, maxBytes)
+
+	// UnsafeRange returns keys and values. And in boltdb, keys are revisions.
+	// values are actual key-value pairs in backend.
+	tx := b.ReadTx()
+	tx.RLock()
+	revs, vs := tx.UnsafeRange(schema.Key, minBytes, maxBytes, 0)
+	evs := kvsToEvents(lg, revs, vs)
+	// Must unlock after kvsToEvents, because vs (come from boltdb memory) is not deep copy.
+	// We can only unlock after Unmarshal, which will do deep copy.
+	// Otherwise we will trigger SIGSEGV during boltdb re-mmap.
+	tx.RUnlock()
+	return evs
 }
 
 // kvsToEvents gets all events for the watchers from all key-value pairs
-func kvsToEvents(lg *zap.Logger, wg *watcherGroup, revs, vals [][]byte) (evs []mvccpb.Event) {
+func kvsToEvents(lg *zap.Logger, revs, vals [][]byte) (evs []mvccpb.Event) {
 	for i, v := range vals {
 		var kv mvccpb.KeyValue
 		if err := kv.Unmarshal(v); err != nil {
 			lg.Panic("failed to unmarshal mvccpb.KeyValue", zap.Error(err))
 		}
 
-		if !wg.contains(string(kv.Key)) {
-			continue
-		}
-
 		ty := mvccpb.PUT
 		if isTombstone(revs[i]) {
 			ty = mvccpb.DELETE
 			// patch in mod revision so watchers won't skip
-			kv.ModRevision = bytesToRev(revs[i]).main
+			kv.ModRevision = BytesToRev(revs[i]).Main
 		}
 		evs = append(evs, mvccpb.Event{Kv: &kv, Type: ty})
 	}
@@ -448,12 +494,15 @@ func (s *watchableStore) notify(rev int64, evs []mvccpb.Event) {
 			pendingEventsGauge.Add(float64(len(eb.evs)))
 		} else {
 			// move slow watcher to victims
-			w.minRev = rev + 1
 			w.victim = true
 			victim[w] = eb
 			s.synced.delete(w)
 			slowWatcherGauge.Inc()
 		}
+		// always update minRev
+		// in case 'send' returns true and watcher stays synced, this is needed for Restore when all watchers become unsynced
+		// in case 'send' returns false, this is needed for syncWatchers
+		w.minRev = rev + 1
 	}
 	s.addVictim(victim)
 }
@@ -472,14 +521,34 @@ func (s *watchableStore) addVictim(victim watcherBatch) {
 func (s *watchableStore) rev() int64 { return s.store.Rev() }
 
 func (s *watchableStore) progress(w *watcher) {
+	s.progressIfSync(map[WatchID]*watcher{w.id: w}, w.id)
+}
+
+func (s *watchableStore) progressAll(watchers map[WatchID]*watcher) bool {
+	return s.progressIfSync(watchers, clientv3.InvalidWatchID)
+}
+
+func (s *watchableStore) progressIfSync(watchers map[WatchID]*watcher, responseWatchID WatchID) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	if _, ok := s.synced.watchers[w]; ok {
-		w.send(WatchResponse{WatchID: w.id, Revision: s.rev()})
-		// If the ch is full, this watcher is receiving events.
-		// We do not need to send progress at all.
+	// Any watcher unsynced?
+	for _, w := range watchers {
+		if _, ok := s.synced.watchers[w]; !ok {
+			return false
+		}
 	}
+
+	// If all watchers are synchronised, send out progress
+	// notification on first watcher. Note that all watchers
+	// should have the same underlying stream, and the progress
+	// notification will be broadcasted client-side if required
+	// (see dispatchEvent in client/v3/watch.go)
+	for _, w := range watchers {
+		w.send(WatchResponse{WatchID: responseWatchID, Revision: s.rev()})
+		return true
+	}
+	return true
 }
 
 type watcher struct {

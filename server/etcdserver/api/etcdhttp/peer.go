@@ -16,10 +16,13 @@ package etcdhttp
 
 import (
 	"encoding/json"
+	errorspkg "errors"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
+
+	"go.uber.org/zap"
 
 	"go.etcd.io/etcd/client/pkg/v3/types"
 	"go.etcd.io/etcd/server/v3/etcdserver"
@@ -28,8 +31,6 @@ import (
 	"go.etcd.io/etcd/server/v3/etcdserver/api/rafthttp"
 	"go.etcd.io/etcd/server/v3/etcdserver/errors"
 	"go.etcd.io/etcd/server/v3/lease/leasehttp"
-
-	"go.uber.org/zap"
 )
 
 const (
@@ -138,12 +139,12 @@ func (h *peerMemberPromoteHandler) ServeHTTP(w http.ResponseWriter, r *http.Requ
 
 	resp, err := h.server.PromoteMember(r.Context(), id)
 	if err != nil {
-		switch err {
-		case membership.ErrIDNotFound:
+		switch {
+		case errorspkg.Is(err, membership.ErrIDNotFound):
 			http.Error(w, err.Error(), http.StatusNotFound)
-		case membership.ErrMemberNotLearner:
+		case errorspkg.Is(err, membership.ErrMemberNotLearner):
 			http.Error(w, err.Error(), http.StatusPreconditionFailed)
-		case errors.ErrLearnerNotReady:
+		case errorspkg.Is(err, errors.ErrLearnerNotReady):
 			http.Error(w, err.Error(), http.StatusPreconditionFailed)
 		default:
 			writeError(h.lg, w, r, err)

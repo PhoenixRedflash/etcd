@@ -25,6 +25,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"go.etcd.io/raft/v3/raftpb"
 )
 
@@ -78,7 +80,7 @@ func newCluster(n int) *cluster {
 func (clus *cluster) Close() (err error) {
 	for i := range clus.peers {
 		go func(i int) {
-			for range clus.commitC[i] {
+			for range clus.commitC[i] { //revive:disable-line:empty-block
 				// drain pending commits
 			}
 		}(i)
@@ -96,9 +98,8 @@ func (clus *cluster) Close() (err error) {
 
 func (clus *cluster) closeNoErrors(t *testing.T) {
 	t.Log("closing cluster...")
-	if err := clus.Close(); err != nil {
-		t.Fatal(err)
-	}
+	err := clus.Close()
+	require.NoError(t, err)
 	t.Log("closing cluster [done]")
 }
 
@@ -125,7 +126,7 @@ func TestProposeOnCommit(t *testing.T) {
 				}
 			}
 			donec <- struct{}{}
-			for range cC {
+			for range cC { //revive:disable-line:empty-block
 				// acknowledge the commits from other nodes so
 				// raft continues to make progress
 			}
@@ -201,32 +202,23 @@ func TestPutAndGetKeyValue(t *testing.T) {
 	cli := srv.Client()
 
 	req, err := http.NewRequest(http.MethodPut, url, body)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	req.Header.Set("Content-Type", "text/html; charset=utf-8")
 	_, err = cli.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	// wait for a moment for processing message, otherwise get would be failed.
 	<-time.After(time.Second)
 
 	resp, err := cli.Get(url)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer resp.Body.Close()
 
-	if gotValue := string(data); wantValue != gotValue {
-		t.Fatalf("expect %s, got %s", wantValue, gotValue)
-	}
+	gotValue := string(data)
+	require.Equalf(t, wantValue, gotValue, "expect %s, got %s", wantValue, gotValue)
 }
 
 // TestAddNewNode tests adding new node to the existing cluster.

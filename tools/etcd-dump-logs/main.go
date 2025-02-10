@@ -16,9 +16,9 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -42,6 +42,10 @@ import (
 
 const (
 	defaultEntryTypes string = "Normal,ConfigChange"
+	methodSync        string = "SYNC"
+	methodQGet        string = "QGET"
+	methodDelete      string = "DELETE"
+	methodRandom      string = "RANDOM"
 )
 
 func main() {
@@ -70,8 +74,15 @@ and output a hex encoded line of binary for each input line`)
 		log.Fatal("start-snap and start-index flags cannot be used together.")
 	}
 
+	startFromIndex := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "start-index" {
+			startFromIndex = true
+		}
+	})
+
 	if !*raw {
-		ents := readUsingReadAll(lg, index, snapfile, dataDir, waldir)
+		ents := readUsingReadAll(lg, startFromIndex, index, snapfile, dataDir, waldir)
 
 		fmt.Printf("WAL entries: %d\n", len(ents))
 		if len(ents) > 0 {
@@ -100,16 +111,14 @@ and output a hex encoded line of binary for each input line`)
 	}
 }
 
-func readUsingReadAll(lg *zap.Logger, index *uint64, snapfile *string, dataDir string, waldir *string) []raftpb.Entry {
+func readUsingReadAll(lg *zap.Logger, startFromIndex bool, index *uint64, snapfile *string, dataDir string, waldir *string) []raftpb.Entry {
 	var (
 		walsnap  walpb.Snapshot
 		snapshot *raftpb.Snapshot
 		err      error
 	)
 
-	isIndex := *index != 0
-
-	if isIndex {
+	if startFromIndex {
 		fmt.Printf("Start dumping log entries from index %d.\n", *index)
 		walsnap.Index = *index
 	} else {
@@ -120,17 +129,18 @@ func readUsingReadAll(lg *zap.Logger, index *uint64, snapfile *string, dataDir s
 			snapshot, err = snap.Read(lg, filepath.Join(snapDir(dataDir), *snapfile))
 		}
 
-		switch err {
-		case nil:
+		switch {
+		case err == nil:
 			walsnap.Index, walsnap.Term = snapshot.Metadata.Index, snapshot.Metadata.Term
 			nodes := genIDSlice(snapshot.Metadata.ConfState.Voters)
-			confStateJSON, err := json.Marshal(snapshot.Metadata.ConfState)
-			if err != nil {
-				confStateJSON = []byte(fmt.Sprintf("confstate err: %v", err))
+
+			confStateJSON, merr := json.Marshal(snapshot.Metadata.ConfState)
+			if merr != nil {
+				confStateJSON = []byte(fmt.Sprintf("confstate err: %v", merr))
 			}
 			fmt.Printf("Snapshot:\nterm=%d index=%d nodes=%s confstate=%s\n",
 				walsnap.Term, walsnap.Index, nodes, confStateJSON)
-		case snap.ErrNoSnapshot:
+		case errors.Is(err, snap.ErrNoSnapshot):
 			fmt.Print("Snapshot:\nempty\n")
 		default:
 			log.Fatalf("Failed loading snapshot: %v", err)
@@ -149,7 +159,7 @@ func readUsingReadAll(lg *zap.Logger, index *uint64, snapfile *string, dataDir s
 	}
 	wmetadata, state, ents, err := w.ReadAll()
 	w.Close()
-	if err != nil && (!isIndex || err != wal.ErrSnapshotNotFound) {
+	if err != nil && (!startFromIndex || !errors.Is(err, wal.ErrSnapshotNotFound)) {
 		log.Fatalf("Failed reading WAL: %v", err)
 	}
 	id, cid := parseWALMetadata(wmetadata)
@@ -292,9 +302,9 @@ func printRequest(entry raftpb.Entry) {
 		switch r.Method {
 		case "":
 			fmt.Print("\tnoop")
-		case "SYNC":
+		case methodSync:
 			fmt.Printf("\tmethod=SYNC time=%q", time.Unix(0, r.Time).UTC())
-		case "QGET", "DELETE":
+		case methodQGet, methodDelete:
 			fmt.Printf("\tmethod=%s path=%s", r.Method, excerpt(r.Path, 64, 64))
 		default:
 			fmt.Printf("\tmethod=%s path=%s val=%s", r.Method, excerpt(r.Path, 64, 64), excerpt(r.Val, 128, 0))
@@ -309,7 +319,8 @@ func evaluateEntrytypeFlag(entrytype string) []EntryFilter {
 		entrytypelist = strings.Split(entrytype, ",")
 	}
 
-	validRequest := map[string][]EntryFilter{"ConfigChange": {passConfChange},
+	validRequest := map[string][]EntryFilter{
+		"ConfigChange":        {passConfChange},
 		"Normal":              {passInternalRaftRequest, passRequest, passUnknownNormal},
 		"Request":             {passRequest},
 		"InternalRaftRequest": {passInternalRaftRequest},
@@ -341,11 +352,13 @@ IRRCompaction, IRRLeaseGrant, IRRLeaseRevoke, IRRLeaseCheckpoint`, et)
 // listEntriesType filters and prints entries based on the entry-type flag,
 func listEntriesType(entrytype string, streamdecoder string, ents []raftpb.Entry) {
 	entryFilters := evaluateEntrytypeFlag(entrytype)
-	printerMap := map[string]EntryPrinter{"InternalRaftRequest": printInternalRaftRequest,
-		"Request":       printRequest,
-		"ConfigChange":  printConfChange,
-		"UnknownNormal": printUnknownNormal}
-	var stderr bytes.Buffer
+	printerMap := map[string]EntryPrinter{
+		"InternalRaftRequest": printInternalRaftRequest,
+		"Request":             printRequest,
+		"ConfigChange":        printConfChange,
+		"UnknownNormal":       printUnknownNormal,
+	}
+	var stderr strings.Builder
 	args := strings.Split(streamdecoder, " ")
 	cmd := exec.Command(args[0], args[1:]...)
 	stdin, err := cmd.StdinPipe()

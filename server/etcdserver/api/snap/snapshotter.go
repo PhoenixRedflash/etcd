@@ -25,6 +25,8 @@ import (
 	"strings"
 	"time"
 
+	"go.uber.org/zap"
+
 	"go.etcd.io/etcd/client/pkg/v3/verify"
 	pioutil "go.etcd.io/etcd/pkg/v3/ioutil"
 	"go.etcd.io/etcd/pkg/v3/pbutil"
@@ -32,8 +34,6 @@ import (
 	"go.etcd.io/etcd/server/v3/storage/wal/walpb"
 	"go.etcd.io/raft/v3"
 	"go.etcd.io/raft/v3/raftpb"
-
-	"go.uber.org/zap"
 )
 
 const snapSuffix = ".snap"
@@ -88,7 +88,7 @@ func (s *Snapshotter) save(snapshot *raftpb.Snapshot) error {
 	spath := filepath.Join(s.dir, fname)
 
 	fsyncStart := time.Now()
-	err = pioutil.WriteAndSyncFile(spath, d, 0666)
+	err = pioutil.WriteAndSyncFile(spath, d, 0o666)
 	snapFsyncSec.Observe(time.Since(fsyncStart).Seconds())
 
 	if err != nil {
@@ -243,7 +243,7 @@ func (s *Snapshotter) cleanupSnapdir(filenames []string) (names []string, err er
 		if strings.HasPrefix(filename, "db.tmp") {
 			s.lg.Info("found orphaned defragmentation file; deleting", zap.String("path", filename))
 			if rmErr := os.Remove(filepath.Join(s.dir, filename)); rmErr != nil && !os.IsNotExist(rmErr) {
-				return names, fmt.Errorf("failed to remove orphaned .snap.db file %s: %v", filename, rmErr)
+				return names, fmt.Errorf("failed to remove orphaned .snap.db file %s: %w", filename, rmErr)
 			}
 		} else {
 			names = append(names, filename)

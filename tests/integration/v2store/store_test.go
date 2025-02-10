@@ -20,7 +20,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
-	"go.etcd.io/etcd/client/pkg/v3/testutil"
+	"github.com/stretchr/testify/require"
+
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v2error"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v2store"
 )
@@ -34,9 +35,9 @@ func TestNewStoreWithNamespaces(t *testing.T) {
 	s := v2store.New("/0", "/1")
 
 	_, err := s.Get("/0", false, false)
-	testutil.AssertNil(t, err)
+	require.NoError(t, err)
 	_, err = s.Get("/1", false, false)
-	testutil.AssertNil(t, err)
+	assert.NoError(t, err)
 }
 
 // TestStoreGetValue ensures that the store can retrieve an existing value.
@@ -46,11 +47,11 @@ func TestStoreGetValue(t *testing.T) {
 	s.Create("/foo", false, "bar", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	var eidx uint64 = 1
 	e, err := s.Get("/foo", false, false)
-	testutil.AssertNil(t, err)
-	assert.Equal(t, e.EtcdIndex, eidx)
-	assert.Equal(t, e.Action, "get")
-	assert.Equal(t, e.Node.Key, "/foo")
-	assert.Equal(t, *e.Node.Value, "bar")
+	require.NoError(t, err)
+	assert.Equal(t, eidx, e.EtcdIndex)
+	assert.Equal(t, "get", e.Action)
+	assert.Equal(t, "/foo", e.Node.Key)
+	assert.Equal(t, "bar", *e.Node.Value)
 }
 
 // TestStoreGetSorted ensures that the store can retrieve a directory in sorted order.
@@ -65,8 +66,8 @@ func TestStoreGetSorted(t *testing.T) {
 	s.Create("/foo/y/b", false, "0", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	var eidx uint64 = 6
 	e, err := s.Get("/foo", true, true)
-	testutil.AssertNil(t, err)
-	assert.Equal(t, e.EtcdIndex, eidx)
+	require.NoError(t, err)
+	assert.Equal(t, eidx, e.EtcdIndex)
 
 	var yNodes v2store.NodeExterns
 	sortedStrings := []string{"/foo/x", "/foo/y", "/foo/z"}
@@ -95,80 +96,80 @@ func TestSet(t *testing.T) {
 	// Set /foo=""
 	var eidx uint64 = 1
 	e, err := s.Set("/foo", false, "", v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
-	testutil.AssertNil(t, err)
-	assert.Equal(t, e.EtcdIndex, eidx)
-	assert.Equal(t, e.Action, "set")
-	assert.Equal(t, e.Node.Key, "/foo")
-	testutil.AssertFalse(t, e.Node.Dir)
-	assert.Equal(t, *e.Node.Value, "")
-	testutil.AssertNil(t, e.Node.Nodes)
-	testutil.AssertNil(t, e.Node.Expiration)
-	assert.Equal(t, e.Node.TTL, int64(0))
-	assert.Equal(t, e.Node.ModifiedIndex, uint64(1))
+	require.NoError(t, err)
+	assert.Equal(t, eidx, e.EtcdIndex)
+	assert.Equal(t, "set", e.Action)
+	assert.Equal(t, "/foo", e.Node.Key)
+	assert.False(t, e.Node.Dir)
+	assert.Equal(t, "", *e.Node.Value)
+	assert.Nil(t, e.Node.Nodes)
+	assert.Nil(t, e.Node.Expiration)
+	assert.Equal(t, int64(0), e.Node.TTL)
+	assert.Equal(t, uint64(1), e.Node.ModifiedIndex)
 
 	// Set /foo="bar"
 	eidx = 2
 	e, err = s.Set("/foo", false, "bar", v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
-	testutil.AssertNil(t, err)
-	assert.Equal(t, e.EtcdIndex, eidx)
-	assert.Equal(t, e.Action, "set")
-	assert.Equal(t, e.Node.Key, "/foo")
-	testutil.AssertFalse(t, e.Node.Dir)
-	assert.Equal(t, *e.Node.Value, "bar")
-	testutil.AssertNil(t, e.Node.Nodes)
-	testutil.AssertNil(t, e.Node.Expiration)
-	assert.Equal(t, e.Node.TTL, int64(0))
-	assert.Equal(t, e.Node.ModifiedIndex, uint64(2))
+	require.NoError(t, err)
+	assert.Equal(t, eidx, e.EtcdIndex)
+	assert.Equal(t, "set", e.Action)
+	assert.Equal(t, "/foo", e.Node.Key)
+	assert.False(t, e.Node.Dir)
+	assert.Equal(t, "bar", *e.Node.Value)
+	assert.Nil(t, e.Node.Nodes)
+	assert.Nil(t, e.Node.Expiration)
+	assert.Equal(t, int64(0), e.Node.TTL)
+	assert.Equal(t, uint64(2), e.Node.ModifiedIndex)
 	// check prevNode
-	testutil.AssertNotNil(t, e.PrevNode)
-	assert.Equal(t, e.PrevNode.Key, "/foo")
-	assert.Equal(t, *e.PrevNode.Value, "")
-	assert.Equal(t, e.PrevNode.ModifiedIndex, uint64(1))
+	require.NotNil(t, e.PrevNode)
+	assert.Equal(t, "/foo", e.PrevNode.Key)
+	assert.Equal(t, "", *e.PrevNode.Value)
+	assert.Equal(t, uint64(1), e.PrevNode.ModifiedIndex)
 	// Set /foo="baz" (for testing prevNode)
 	eidx = 3
 	e, err = s.Set("/foo", false, "baz", v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
-	testutil.AssertNil(t, err)
-	assert.Equal(t, e.EtcdIndex, eidx)
-	assert.Equal(t, e.Action, "set")
-	assert.Equal(t, e.Node.Key, "/foo")
-	testutil.AssertFalse(t, e.Node.Dir)
-	assert.Equal(t, *e.Node.Value, "baz")
-	testutil.AssertNil(t, e.Node.Nodes)
-	testutil.AssertNil(t, e.Node.Expiration)
-	assert.Equal(t, e.Node.TTL, int64(0))
-	assert.Equal(t, e.Node.ModifiedIndex, uint64(3))
+	require.NoError(t, err)
+	assert.Equal(t, eidx, e.EtcdIndex)
+	assert.Equal(t, "set", e.Action)
+	assert.Equal(t, "/foo", e.Node.Key)
+	assert.False(t, e.Node.Dir)
+	assert.Equal(t, "baz", *e.Node.Value)
+	assert.Nil(t, e.Node.Nodes)
+	assert.Nil(t, e.Node.Expiration)
+	assert.Equal(t, int64(0), e.Node.TTL)
+	assert.Equal(t, uint64(3), e.Node.ModifiedIndex)
 	// check prevNode
-	testutil.AssertNotNil(t, e.PrevNode)
-	assert.Equal(t, e.PrevNode.Key, "/foo")
-	assert.Equal(t, *e.PrevNode.Value, "bar")
-	assert.Equal(t, e.PrevNode.ModifiedIndex, uint64(2))
+	require.NotNil(t, e.PrevNode)
+	assert.Equal(t, "/foo", e.PrevNode.Key)
+	assert.Equal(t, "bar", *e.PrevNode.Value)
+	assert.Equal(t, uint64(2), e.PrevNode.ModifiedIndex)
 
 	// Set /a/b/c/d="efg"
 	eidx = 4
 	e, err = s.Set("/a/b/c/d", false, "efg", v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
-	testutil.AssertNil(t, err)
-	assert.Equal(t, e.EtcdIndex, eidx)
-	assert.Equal(t, e.Node.Key, "/a/b/c/d")
-	testutil.AssertFalse(t, e.Node.Dir)
-	assert.Equal(t, *e.Node.Value, "efg")
-	testutil.AssertNil(t, e.Node.Nodes)
-	testutil.AssertNil(t, e.Node.Expiration)
-	assert.Equal(t, e.Node.TTL, int64(0))
-	assert.Equal(t, e.Node.ModifiedIndex, uint64(4))
+	require.NoError(t, err)
+	assert.Equal(t, eidx, e.EtcdIndex)
+	assert.Equal(t, "/a/b/c/d", e.Node.Key)
+	assert.False(t, e.Node.Dir)
+	assert.Equal(t, "efg", *e.Node.Value)
+	assert.Nil(t, e.Node.Nodes)
+	assert.Nil(t, e.Node.Expiration)
+	assert.Equal(t, int64(0), e.Node.TTL)
+	assert.Equal(t, uint64(4), e.Node.ModifiedIndex)
 
 	// Set /dir as a directory
 	eidx = 5
 	e, err = s.Set("/dir", true, "", v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
-	testutil.AssertNil(t, err)
-	assert.Equal(t, e.EtcdIndex, eidx)
-	assert.Equal(t, e.Action, "set")
-	assert.Equal(t, e.Node.Key, "/dir")
-	testutil.AssertTrue(t, e.Node.Dir)
-	testutil.AssertNil(t, e.Node.Value)
-	testutil.AssertNil(t, e.Node.Nodes)
-	testutil.AssertNil(t, e.Node.Expiration)
-	assert.Equal(t, e.Node.TTL, int64(0))
-	assert.Equal(t, e.Node.ModifiedIndex, uint64(5))
+	require.NoError(t, err)
+	assert.Equal(t, eidx, e.EtcdIndex)
+	assert.Equal(t, "set", e.Action)
+	assert.Equal(t, "/dir", e.Node.Key)
+	assert.True(t, e.Node.Dir)
+	assert.Nil(t, e.Node.Value)
+	assert.Nil(t, e.Node.Nodes)
+	assert.Nil(t, e.Node.Expiration)
+	assert.Equal(t, int64(0), e.Node.TTL)
+	assert.Equal(t, uint64(5), e.Node.ModifiedIndex)
 }
 
 // TestStoreCreateValue ensures that the store can create a new key if it doesn't already exist.
@@ -178,31 +179,30 @@ func TestStoreCreateValue(t *testing.T) {
 	// Create /foo=bar
 	var eidx uint64 = 1
 	e, err := s.Create("/foo", false, "bar", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
-	testutil.AssertNil(t, err)
-	assert.Equal(t, e.EtcdIndex, eidx)
-	assert.Equal(t, e.Action, "create")
-	assert.Equal(t, e.Node.Key, "/foo")
-	testutil.AssertFalse(t, e.Node.Dir)
-	assert.Equal(t, *e.Node.Value, "bar")
-	testutil.AssertNil(t, e.Node.Nodes)
-	testutil.AssertNil(t, e.Node.Expiration)
-	assert.Equal(t, e.Node.TTL, int64(0))
-	assert.Equal(t, e.Node.ModifiedIndex, uint64(1))
+	require.NoError(t, err)
+	assert.Equal(t, eidx, e.EtcdIndex)
+	assert.Equal(t, "create", e.Action)
+	assert.Equal(t, "/foo", e.Node.Key)
+	assert.False(t, e.Node.Dir)
+	assert.Equal(t, "bar", *e.Node.Value)
+	assert.Nil(t, e.Node.Nodes)
+	assert.Nil(t, e.Node.Expiration)
+	assert.Equal(t, int64(0), e.Node.TTL)
+	assert.Equal(t, uint64(1), e.Node.ModifiedIndex)
 
 	// Create /empty=""
 	eidx = 2
 	e, err = s.Create("/empty", false, "", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
-	testutil.AssertNil(t, err)
-	assert.Equal(t, e.EtcdIndex, eidx)
-	assert.Equal(t, e.Action, "create")
-	assert.Equal(t, e.Node.Key, "/empty")
-	testutil.AssertFalse(t, e.Node.Dir)
-	assert.Equal(t, *e.Node.Value, "")
-	testutil.AssertNil(t, e.Node.Nodes)
-	testutil.AssertNil(t, e.Node.Expiration)
-	assert.Equal(t, e.Node.TTL, int64(0))
-	assert.Equal(t, e.Node.ModifiedIndex, uint64(2))
-
+	require.NoError(t, err)
+	assert.Equal(t, eidx, e.EtcdIndex)
+	assert.Equal(t, "create", e.Action)
+	assert.Equal(t, "/empty", e.Node.Key)
+	assert.False(t, e.Node.Dir)
+	assert.Equal(t, "", *e.Node.Value)
+	assert.Nil(t, e.Node.Nodes)
+	assert.Nil(t, e.Node.Expiration)
+	assert.Equal(t, int64(0), e.Node.TTL)
+	assert.Equal(t, uint64(2), e.Node.ModifiedIndex)
 }
 
 // TestStoreCreateDirectory ensures that the store can create a new directory if it doesn't already exist.
@@ -211,11 +211,11 @@ func TestStoreCreateDirectory(t *testing.T) {
 
 	var eidx uint64 = 1
 	e, err := s.Create("/foo", true, "", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
-	testutil.AssertNil(t, err)
-	assert.Equal(t, e.EtcdIndex, eidx)
-	assert.Equal(t, e.Action, "create")
-	assert.Equal(t, e.Node.Key, "/foo")
-	testutil.AssertTrue(t, e.Node.Dir)
+	require.NoError(t, err)
+	assert.Equal(t, eidx, e.EtcdIndex)
+	assert.Equal(t, "create", e.Action)
+	assert.Equal(t, "/foo", e.Node.Key)
+	assert.True(t, e.Node.Dir)
 }
 
 // TestStoreCreateFailsIfExists ensure that the store fails to create a key if it already exists.
@@ -227,12 +227,13 @@ func TestStoreCreateFailsIfExists(t *testing.T) {
 
 	// create /foo as dir again
 	e, _err := s.Create("/foo", true, "", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
-	err := _err.(*v2error.Error)
-	assert.Equal(t, err.ErrorCode, v2error.EcodeNodeExist)
-	assert.Equal(t, err.Message, "Key already exists")
-	assert.Equal(t, err.Cause, "/foo")
-	assert.Equal(t, err.Index, uint64(1))
-	testutil.AssertNil(t, e)
+	var err *v2error.Error
+	require.ErrorAs(t, _err, &err)
+	assert.Equal(t, v2error.EcodeNodeExist, err.ErrorCode)
+	assert.Equal(t, "Key already exists", err.Message)
+	assert.Equal(t, "/foo", err.Cause)
+	assert.Equal(t, uint64(1), err.Index)
+	assert.Nil(t, e)
 }
 
 // TestStoreUpdateValue ensures that the store can update a key if it already exists.
@@ -244,44 +245,44 @@ func TestStoreUpdateValue(t *testing.T) {
 	// update /foo="bzr"
 	var eidx uint64 = 2
 	e, err := s.Update("/foo", "baz", v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
-	testutil.AssertNil(t, err)
-	assert.Equal(t, e.EtcdIndex, eidx)
-	assert.Equal(t, e.Action, "update")
-	assert.Equal(t, e.Node.Key, "/foo")
-	testutil.AssertFalse(t, e.Node.Dir)
-	assert.Equal(t, *e.Node.Value, "baz")
-	assert.Equal(t, e.Node.TTL, int64(0))
-	assert.Equal(t, e.Node.ModifiedIndex, uint64(2))
+	require.NoError(t, err)
+	assert.Equal(t, eidx, e.EtcdIndex)
+	assert.Equal(t, "update", e.Action)
+	assert.Equal(t, "/foo", e.Node.Key)
+	assert.False(t, e.Node.Dir)
+	assert.Equal(t, "baz", *e.Node.Value)
+	assert.Equal(t, int64(0), e.Node.TTL)
+	assert.Equal(t, uint64(2), e.Node.ModifiedIndex)
 	// check prevNode
-	assert.Equal(t, e.PrevNode.Key, "/foo")
-	assert.Equal(t, *e.PrevNode.Value, "bar")
-	assert.Equal(t, e.PrevNode.TTL, int64(0))
-	assert.Equal(t, e.PrevNode.ModifiedIndex, uint64(1))
+	assert.Equal(t, "/foo", e.PrevNode.Key)
+	assert.Equal(t, "bar", *e.PrevNode.Value)
+	assert.Equal(t, int64(0), e.PrevNode.TTL)
+	assert.Equal(t, uint64(1), e.PrevNode.ModifiedIndex)
 
 	e, _ = s.Get("/foo", false, false)
-	assert.Equal(t, *e.Node.Value, "baz")
-	assert.Equal(t, e.EtcdIndex, eidx)
+	assert.Equal(t, "baz", *e.Node.Value)
+	assert.Equal(t, eidx, e.EtcdIndex)
 
 	// update /foo=""
 	eidx = 3
 	e, err = s.Update("/foo", "", v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
-	testutil.AssertNil(t, err)
-	assert.Equal(t, e.EtcdIndex, eidx)
-	assert.Equal(t, e.Action, "update")
-	assert.Equal(t, e.Node.Key, "/foo")
-	testutil.AssertFalse(t, e.Node.Dir)
-	assert.Equal(t, *e.Node.Value, "")
-	assert.Equal(t, e.Node.TTL, int64(0))
-	assert.Equal(t, e.Node.ModifiedIndex, uint64(3))
+	require.NoError(t, err)
+	assert.Equal(t, eidx, e.EtcdIndex)
+	assert.Equal(t, "update", e.Action)
+	assert.Equal(t, "/foo", e.Node.Key)
+	assert.False(t, e.Node.Dir)
+	assert.Equal(t, "", *e.Node.Value)
+	assert.Equal(t, int64(0), e.Node.TTL)
+	assert.Equal(t, uint64(3), e.Node.ModifiedIndex)
 	// check prevNode
-	assert.Equal(t, e.PrevNode.Key, "/foo")
-	assert.Equal(t, *e.PrevNode.Value, "baz")
-	assert.Equal(t, e.PrevNode.TTL, int64(0))
-	assert.Equal(t, e.PrevNode.ModifiedIndex, uint64(2))
+	assert.Equal(t, "/foo", e.PrevNode.Key)
+	assert.Equal(t, "baz", *e.PrevNode.Value)
+	assert.Equal(t, int64(0), e.PrevNode.TTL)
+	assert.Equal(t, uint64(2), e.PrevNode.ModifiedIndex)
 
 	e, _ = s.Get("/foo", false, false)
-	assert.Equal(t, e.EtcdIndex, eidx)
-	assert.Equal(t, *e.Node.Value, "")
+	assert.Equal(t, eidx, e.EtcdIndex)
+	assert.Equal(t, "", *e.Node.Value)
 }
 
 // TestStoreUpdateFailsIfDirectory ensures that the store cannot update a directory.
@@ -290,11 +291,12 @@ func TestStoreUpdateFailsIfDirectory(t *testing.T) {
 
 	s.Create("/foo", true, "", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	e, _err := s.Update("/foo", "baz", v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
-	err := _err.(*v2error.Error)
-	assert.Equal(t, err.ErrorCode, v2error.EcodeNotFile)
-	assert.Equal(t, err.Message, "Not a file")
-	assert.Equal(t, err.Cause, "/foo")
-	testutil.AssertNil(t, e)
+	var err *v2error.Error
+	require.ErrorAs(t, _err, &err)
+	assert.Equal(t, v2error.EcodeNotFile, err.ErrorCode)
+	assert.Equal(t, "Not a file", err.Message)
+	assert.Equal(t, "/foo", err.Cause)
+	assert.Nil(t, e)
 }
 
 // TestStoreDeleteValue ensures that the store can delete a value.
@@ -304,13 +306,13 @@ func TestStoreDeleteValue(t *testing.T) {
 	var eidx uint64 = 2
 	s.Create("/foo", false, "bar", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	e, err := s.Delete("/foo", false, false)
-	testutil.AssertNil(t, err)
-	assert.Equal(t, e.EtcdIndex, eidx)
-	assert.Equal(t, e.Action, "delete")
+	require.NoError(t, err)
+	assert.Equal(t, eidx, e.EtcdIndex)
+	assert.Equal(t, "delete", e.Action)
 	// check prevNode
-	testutil.AssertNotNil(t, e.PrevNode)
-	assert.Equal(t, e.PrevNode.Key, "/foo")
-	assert.Equal(t, *e.PrevNode.Value, "bar")
+	require.NotNil(t, e.PrevNode)
+	assert.Equal(t, "/foo", e.PrevNode.Key)
+	assert.Equal(t, "bar", *e.PrevNode.Value)
 }
 
 // TestStoreDeleteDirectory ensures that the store can delete a directory if recursive is specified.
@@ -323,30 +325,29 @@ func TestStoreDeleteDirectory(t *testing.T) {
 	// delete /foo with dir = true and recursive = false
 	// this should succeed, since the directory is empty
 	e, err := s.Delete("/foo", true, false)
-	testutil.AssertNil(t, err)
-	assert.Equal(t, e.EtcdIndex, eidx)
-	assert.Equal(t, e.Action, "delete")
+	require.NoError(t, err)
+	assert.Equal(t, eidx, e.EtcdIndex)
+	assert.Equal(t, "delete", e.Action)
 	// check prevNode
-	testutil.AssertNotNil(t, e.PrevNode)
-	assert.Equal(t, e.PrevNode.Key, "/foo")
-	assert.Equal(t, e.PrevNode.Dir, true)
+	require.NotNil(t, e.PrevNode)
+	assert.Equal(t, "/foo", e.PrevNode.Key)
+	assert.True(t, e.PrevNode.Dir)
 
 	// create directory /foo and directory /foo/bar
 	_, err = s.Create("/foo/bar", true, "", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
-	testutil.AssertNil(t, err)
+	require.NoError(t, err)
 	// delete /foo with dir = true and recursive = false
 	// this should fail, since the directory is not empty
 	_, err = s.Delete("/foo", true, false)
-	testutil.AssertNotNil(t, err)
+	require.Error(t, err)
 
 	// delete /foo with dir=false and recursive = true
 	// this should succeed, since recursive implies dir=true
 	// and recursively delete should be able to delete all
 	// items under the given directory
 	e, err = s.Delete("/foo", false, true)
-	testutil.AssertNil(t, err)
-	assert.Equal(t, e.Action, "delete")
-
+	require.NoError(t, err)
+	assert.Equal(t, "delete", e.Action)
 }
 
 // TestStoreDeleteDirectoryFailsIfNonRecursiveAndDir ensures that the
@@ -356,10 +357,11 @@ func TestStoreDeleteDirectoryFailsIfNonRecursiveAndDir(t *testing.T) {
 
 	s.Create("/foo", true, "", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	e, _err := s.Delete("/foo", false, false)
-	err := _err.(*v2error.Error)
-	assert.Equal(t, err.ErrorCode, v2error.EcodeNotFile)
-	assert.Equal(t, err.Message, "Not a file")
-	testutil.AssertNil(t, e)
+	var err *v2error.Error
+	require.ErrorAs(t, _err, &err)
+	assert.Equal(t, v2error.EcodeNotFile, err.ErrorCode)
+	assert.Equal(t, "Not a file", err.Message)
+	assert.Nil(t, e)
 }
 
 func TestRootRdOnly(t *testing.T) {
@@ -367,19 +369,19 @@ func TestRootRdOnly(t *testing.T) {
 
 	for _, tt := range []string{"/", "/0"} {
 		_, err := s.Set(tt, true, "", v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
-		testutil.AssertNotNil(t, err)
+		require.Error(t, err)
 
 		_, err = s.Delete(tt, true, true)
-		testutil.AssertNotNil(t, err)
+		require.Error(t, err)
 
 		_, err = s.Create(tt, true, "", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
-		testutil.AssertNotNil(t, err)
+		require.Error(t, err)
 
 		_, err = s.Update(tt, "", v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
-		testutil.AssertNotNil(t, err)
+		require.Error(t, err)
 
 		_, err = s.CompareAndSwap(tt, "", 0, "", v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
-		testutil.AssertNotNil(t, err)
+		require.Error(t, err)
 	}
 }
 
@@ -389,17 +391,17 @@ func TestStoreCompareAndDeletePrevValue(t *testing.T) {
 	var eidx uint64 = 2
 	s.Create("/foo", false, "bar", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	e, err := s.CompareAndDelete("/foo", "bar", 0)
-	testutil.AssertNil(t, err)
-	assert.Equal(t, e.EtcdIndex, eidx)
-	assert.Equal(t, e.Action, "compareAndDelete")
-	assert.Equal(t, e.Node.Key, "/foo")
+	require.NoError(t, err)
+	assert.Equal(t, eidx, e.EtcdIndex)
+	assert.Equal(t, "compareAndDelete", e.Action)
+	assert.Equal(t, "/foo", e.Node.Key)
 
 	// check prevNode
-	testutil.AssertNotNil(t, e.PrevNode)
-	assert.Equal(t, e.PrevNode.Key, "/foo")
-	assert.Equal(t, *e.PrevNode.Value, "bar")
-	assert.Equal(t, e.PrevNode.ModifiedIndex, uint64(1))
-	assert.Equal(t, e.PrevNode.CreatedIndex, uint64(1))
+	require.NotNil(t, e.PrevNode)
+	assert.Equal(t, "/foo", e.PrevNode.Key)
+	assert.Equal(t, "bar", *e.PrevNode.Value)
+	assert.Equal(t, uint64(1), e.PrevNode.ModifiedIndex)
+	assert.Equal(t, uint64(1), e.PrevNode.CreatedIndex)
 }
 
 func TestStoreCompareAndDeletePrevValueFailsIfNotMatch(t *testing.T) {
@@ -408,13 +410,14 @@ func TestStoreCompareAndDeletePrevValueFailsIfNotMatch(t *testing.T) {
 	var eidx uint64 = 1
 	s.Create("/foo", false, "bar", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	e, _err := s.CompareAndDelete("/foo", "baz", 0)
-	err := _err.(*v2error.Error)
-	assert.Equal(t, err.ErrorCode, v2error.EcodeTestFailed)
-	assert.Equal(t, err.Message, "Compare failed")
-	testutil.AssertNil(t, e)
+	var err *v2error.Error
+	require.ErrorAs(t, _err, &err)
+	assert.Equal(t, v2error.EcodeTestFailed, err.ErrorCode)
+	assert.Equal(t, "Compare failed", err.Message)
+	assert.Nil(t, e)
 	e, _ = s.Get("/foo", false, false)
-	assert.Equal(t, e.EtcdIndex, eidx)
-	assert.Equal(t, *e.Node.Value, "bar")
+	assert.Equal(t, eidx, e.EtcdIndex)
+	assert.Equal(t, "bar", *e.Node.Value)
 }
 
 func TestStoreCompareAndDeletePrevIndex(t *testing.T) {
@@ -423,15 +426,15 @@ func TestStoreCompareAndDeletePrevIndex(t *testing.T) {
 	var eidx uint64 = 2
 	s.Create("/foo", false, "bar", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	e, err := s.CompareAndDelete("/foo", "", 1)
-	testutil.AssertNil(t, err)
-	assert.Equal(t, e.EtcdIndex, eidx)
-	assert.Equal(t, e.Action, "compareAndDelete")
+	require.NoError(t, err)
+	assert.Equal(t, eidx, e.EtcdIndex)
+	assert.Equal(t, "compareAndDelete", e.Action)
 	// check prevNode
-	testutil.AssertNotNil(t, e.PrevNode)
-	assert.Equal(t, e.PrevNode.Key, "/foo")
-	assert.Equal(t, *e.PrevNode.Value, "bar")
-	assert.Equal(t, e.PrevNode.ModifiedIndex, uint64(1))
-	assert.Equal(t, e.PrevNode.CreatedIndex, uint64(1))
+	require.NotNil(t, e.PrevNode)
+	assert.Equal(t, "/foo", e.PrevNode.Key)
+	assert.Equal(t, "bar", *e.PrevNode.Value)
+	assert.Equal(t, uint64(1), e.PrevNode.ModifiedIndex)
+	assert.Equal(t, uint64(1), e.PrevNode.CreatedIndex)
 }
 
 func TestStoreCompareAndDeletePrevIndexFailsIfNotMatch(t *testing.T) {
@@ -440,14 +443,15 @@ func TestStoreCompareAndDeletePrevIndexFailsIfNotMatch(t *testing.T) {
 	var eidx uint64 = 1
 	s.Create("/foo", false, "bar", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	e, _err := s.CompareAndDelete("/foo", "", 100)
-	testutil.AssertNotNil(t, _err)
-	err := _err.(*v2error.Error)
-	assert.Equal(t, err.ErrorCode, v2error.EcodeTestFailed)
-	assert.Equal(t, err.Message, "Compare failed")
-	testutil.AssertNil(t, e)
+	require.Error(t, _err)
+	var err *v2error.Error
+	require.ErrorAs(t, _err, &err)
+	assert.Equal(t, v2error.EcodeTestFailed, err.ErrorCode)
+	assert.Equal(t, "Compare failed", err.Message)
+	assert.Nil(t, e)
 	e, _ = s.Get("/foo", false, false)
-	assert.Equal(t, e.EtcdIndex, eidx)
-	assert.Equal(t, *e.Node.Value, "bar")
+	assert.Equal(t, eidx, e.EtcdIndex)
+	assert.Equal(t, "bar", *e.Node.Value)
 }
 
 // TestStoreCompareAndDeleteDirectoryFail ensures that the store cannot delete a directory.
@@ -456,9 +460,10 @@ func TestStoreCompareAndDeleteDirectoryFail(t *testing.T) {
 
 	s.Create("/foo", true, "", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	_, _err := s.CompareAndDelete("/foo", "", 0)
-	testutil.AssertNotNil(t, _err)
-	err := _err.(*v2error.Error)
-	assert.Equal(t, err.ErrorCode, v2error.EcodeNotFile)
+	require.Error(t, _err)
+	var err *v2error.Error
+	require.ErrorAs(t, _err, &err)
+	assert.Equal(t, v2error.EcodeNotFile, err.ErrorCode)
 }
 
 // TestStoreCompareAndSwapPrevValue ensures that the store can conditionally
@@ -469,19 +474,19 @@ func TestStoreCompareAndSwapPrevValue(t *testing.T) {
 	var eidx uint64 = 2
 	s.Create("/foo", false, "bar", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	e, err := s.CompareAndSwap("/foo", "bar", 0, "baz", v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
-	testutil.AssertNil(t, err)
-	assert.Equal(t, e.EtcdIndex, eidx)
-	assert.Equal(t, e.Action, "compareAndSwap")
-	assert.Equal(t, *e.Node.Value, "baz")
+	require.NoError(t, err)
+	assert.Equal(t, eidx, e.EtcdIndex)
+	assert.Equal(t, "compareAndSwap", e.Action)
+	assert.Equal(t, "baz", *e.Node.Value)
 	// check prevNode
-	testutil.AssertNotNil(t, e.PrevNode)
-	assert.Equal(t, e.PrevNode.Key, "/foo")
-	assert.Equal(t, *e.PrevNode.Value, "bar")
-	assert.Equal(t, e.PrevNode.ModifiedIndex, uint64(1))
-	assert.Equal(t, e.PrevNode.CreatedIndex, uint64(1))
+	require.NotNil(t, e.PrevNode)
+	assert.Equal(t, "/foo", e.PrevNode.Key)
+	assert.Equal(t, "bar", *e.PrevNode.Value)
+	assert.Equal(t, uint64(1), e.PrevNode.ModifiedIndex)
+	assert.Equal(t, uint64(1), e.PrevNode.CreatedIndex)
 
 	e, _ = s.Get("/foo", false, false)
-	assert.Equal(t, *e.Node.Value, "baz")
+	assert.Equal(t, "baz", *e.Node.Value)
 }
 
 // TestStoreCompareAndSwapPrevValueFailsIfNotMatch ensure that the store cannot
@@ -491,13 +496,14 @@ func TestStoreCompareAndSwapPrevValueFailsIfNotMatch(t *testing.T) {
 	var eidx uint64 = 1
 	s.Create("/foo", false, "bar", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	e, _err := s.CompareAndSwap("/foo", "wrong_value", 0, "baz", v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
-	err := _err.(*v2error.Error)
-	assert.Equal(t, err.ErrorCode, v2error.EcodeTestFailed)
-	assert.Equal(t, err.Message, "Compare failed")
-	testutil.AssertNil(t, e)
+	var err *v2error.Error
+	require.ErrorAs(t, _err, &err)
+	assert.Equal(t, v2error.EcodeTestFailed, err.ErrorCode)
+	assert.Equal(t, "Compare failed", err.Message)
+	assert.Nil(t, e)
 	e, _ = s.Get("/foo", false, false)
-	assert.Equal(t, *e.Node.Value, "bar")
-	assert.Equal(t, e.EtcdIndex, eidx)
+	assert.Equal(t, "bar", *e.Node.Value)
+	assert.Equal(t, eidx, e.EtcdIndex)
 }
 
 // TestStoreCompareAndSwapPrevIndex ensures that the store can conditionally
@@ -507,20 +513,20 @@ func TestStoreCompareAndSwapPrevIndex(t *testing.T) {
 	var eidx uint64 = 2
 	s.Create("/foo", false, "bar", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	e, err := s.CompareAndSwap("/foo", "", 1, "baz", v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
-	testutil.AssertNil(t, err)
-	assert.Equal(t, e.EtcdIndex, eidx)
-	assert.Equal(t, e.Action, "compareAndSwap")
-	assert.Equal(t, *e.Node.Value, "baz")
+	require.NoError(t, err)
+	assert.Equal(t, eidx, e.EtcdIndex)
+	assert.Equal(t, "compareAndSwap", e.Action)
+	assert.Equal(t, "baz", *e.Node.Value)
 	// check prevNode
-	testutil.AssertNotNil(t, e.PrevNode)
-	assert.Equal(t, e.PrevNode.Key, "/foo")
-	assert.Equal(t, *e.PrevNode.Value, "bar")
-	assert.Equal(t, e.PrevNode.ModifiedIndex, uint64(1))
-	assert.Equal(t, e.PrevNode.CreatedIndex, uint64(1))
+	require.NotNil(t, e.PrevNode)
+	assert.Equal(t, "/foo", e.PrevNode.Key)
+	assert.Equal(t, "bar", *e.PrevNode.Value)
+	assert.Equal(t, uint64(1), e.PrevNode.ModifiedIndex)
+	assert.Equal(t, uint64(1), e.PrevNode.CreatedIndex)
 
 	e, _ = s.Get("/foo", false, false)
-	assert.Equal(t, *e.Node.Value, "baz")
-	assert.Equal(t, e.EtcdIndex, eidx)
+	assert.Equal(t, "baz", *e.Node.Value)
+	assert.Equal(t, eidx, e.EtcdIndex)
 }
 
 // TestStoreCompareAndSwapPrevIndexFailsIfNotMatch ensures that the store cannot
@@ -530,31 +536,32 @@ func TestStoreCompareAndSwapPrevIndexFailsIfNotMatch(t *testing.T) {
 	var eidx uint64 = 1
 	s.Create("/foo", false, "bar", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	e, _err := s.CompareAndSwap("/foo", "", 100, "baz", v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
-	err := _err.(*v2error.Error)
-	assert.Equal(t, err.ErrorCode, v2error.EcodeTestFailed)
-	assert.Equal(t, err.Message, "Compare failed")
-	testutil.AssertNil(t, e)
+	var err *v2error.Error
+	require.ErrorAs(t, _err, &err)
+	assert.Equal(t, v2error.EcodeTestFailed, err.ErrorCode)
+	assert.Equal(t, "Compare failed", err.Message)
+	assert.Nil(t, e)
 	e, _ = s.Get("/foo", false, false)
-	assert.Equal(t, e.EtcdIndex, eidx)
-	assert.Equal(t, *e.Node.Value, "bar")
+	assert.Equal(t, eidx, e.EtcdIndex)
+	assert.Equal(t, "bar", *e.Node.Value)
 }
 
 // TestStoreWatchCreate ensures that the store can watch for key creation.
 func TestStoreWatchCreate(t *testing.T) {
 	s := v2store.New()
-	var eidx uint64 = 0
+	var eidx uint64
 	w, _ := s.Watch("/foo", false, false, 0)
 	c := w.EventChan()
-	assert.Equal(t, w.StartIndex(), eidx)
+	assert.Equal(t, eidx, w.StartIndex())
 	s.Create("/foo", false, "bar", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	eidx = 1
 	e := timeoutSelect(t, c)
-	assert.Equal(t, e.EtcdIndex, eidx)
-	assert.Equal(t, e.Action, "create")
-	assert.Equal(t, e.Node.Key, "/foo")
+	assert.Equal(t, eidx, e.EtcdIndex)
+	assert.Equal(t, "create", e.Action)
+	assert.Equal(t, "/foo", e.Node.Key)
 	select {
 	case e = <-w.EventChan():
-		testutil.AssertNil(t, e)
+		assert.Nil(t, e)
 	case <-time.After(100 * time.Millisecond):
 	}
 }
@@ -563,16 +570,16 @@ func TestStoreWatchCreate(t *testing.T) {
 // can watch for recursive key creation.
 func TestStoreWatchRecursiveCreate(t *testing.T) {
 	s := v2store.New()
-	var eidx uint64 = 0
+	var eidx uint64
 	w, err := s.Watch("/foo", true, false, 0)
-	testutil.AssertNil(t, err)
-	assert.Equal(t, w.StartIndex(), eidx)
+	require.NoError(t, err)
+	assert.Equal(t, eidx, w.StartIndex())
 	eidx = 1
 	s.Create("/foo/bar", false, "baz", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	e := timeoutSelect(t, w.EventChan())
-	assert.Equal(t, e.EtcdIndex, eidx)
-	assert.Equal(t, e.Action, "create")
-	assert.Equal(t, e.Node.Key, "/foo/bar")
+	assert.Equal(t, eidx, e.EtcdIndex)
+	assert.Equal(t, "create", e.Action)
+	assert.Equal(t, "/foo/bar", e.Node.Key)
 }
 
 // TestStoreWatchUpdate ensures that the store can watch for key updates.
@@ -581,13 +588,13 @@ func TestStoreWatchUpdate(t *testing.T) {
 	var eidx uint64 = 1
 	s.Create("/foo", false, "bar", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	w, _ := s.Watch("/foo", false, false, 0)
-	assert.Equal(t, w.StartIndex(), eidx)
+	assert.Equal(t, eidx, w.StartIndex())
 	eidx = 2
 	s.Update("/foo", "baz", v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	e := timeoutSelect(t, w.EventChan())
-	assert.Equal(t, e.EtcdIndex, eidx)
-	assert.Equal(t, e.Action, "update")
-	assert.Equal(t, e.Node.Key, "/foo")
+	assert.Equal(t, eidx, e.EtcdIndex)
+	assert.Equal(t, "update", e.Action)
+	assert.Equal(t, "/foo", e.Node.Key)
 }
 
 // TestStoreWatchRecursiveUpdate ensures that the store can watch for recursive key updates.
@@ -596,14 +603,14 @@ func TestStoreWatchRecursiveUpdate(t *testing.T) {
 	var eidx uint64 = 1
 	s.Create("/foo/bar", false, "baz", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	w, err := s.Watch("/foo", true, false, 0)
-	testutil.AssertNil(t, err)
-	assert.Equal(t, w.StartIndex(), eidx)
+	require.NoError(t, err)
+	assert.Equal(t, eidx, w.StartIndex())
 	eidx = 2
 	s.Update("/foo/bar", "baz", v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	e := timeoutSelect(t, w.EventChan())
-	assert.Equal(t, e.EtcdIndex, eidx)
-	assert.Equal(t, e.Action, "update")
-	assert.Equal(t, e.Node.Key, "/foo/bar")
+	assert.Equal(t, eidx, e.EtcdIndex)
+	assert.Equal(t, "update", e.Action)
+	assert.Equal(t, "/foo/bar", e.Node.Key)
 }
 
 // TestStoreWatchDelete ensures that the store can watch for key deletions.
@@ -612,13 +619,13 @@ func TestStoreWatchDelete(t *testing.T) {
 	var eidx uint64 = 1
 	s.Create("/foo", false, "bar", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	w, _ := s.Watch("/foo", false, false, 0)
-	assert.Equal(t, w.StartIndex(), eidx)
+	assert.Equal(t, eidx, w.StartIndex())
 	eidx = 2
 	s.Delete("/foo", false, false)
 	e := timeoutSelect(t, w.EventChan())
-	assert.Equal(t, e.EtcdIndex, eidx)
-	assert.Equal(t, e.Action, "delete")
-	assert.Equal(t, e.Node.Key, "/foo")
+	assert.Equal(t, eidx, e.EtcdIndex)
+	assert.Equal(t, "delete", e.Action)
+	assert.Equal(t, "/foo", e.Node.Key)
 }
 
 // TestStoreWatchRecursiveDelete ensures that the store can watch for recursive key deletions.
@@ -627,14 +634,14 @@ func TestStoreWatchRecursiveDelete(t *testing.T) {
 	var eidx uint64 = 1
 	s.Create("/foo/bar", false, "baz", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	w, err := s.Watch("/foo", true, false, 0)
-	testutil.AssertNil(t, err)
-	assert.Equal(t, w.StartIndex(), eidx)
+	require.NoError(t, err)
+	assert.Equal(t, eidx, w.StartIndex())
 	eidx = 2
 	s.Delete("/foo/bar", false, false)
 	e := timeoutSelect(t, w.EventChan())
-	assert.Equal(t, e.EtcdIndex, eidx)
-	assert.Equal(t, e.Action, "delete")
-	assert.Equal(t, e.Node.Key, "/foo/bar")
+	assert.Equal(t, eidx, e.EtcdIndex)
+	assert.Equal(t, "delete", e.Action)
+	assert.Equal(t, "/foo/bar", e.Node.Key)
 }
 
 // TestStoreWatchCompareAndSwap ensures that the store can watch for CAS updates.
@@ -643,13 +650,13 @@ func TestStoreWatchCompareAndSwap(t *testing.T) {
 	var eidx uint64 = 1
 	s.Create("/foo", false, "bar", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	w, _ := s.Watch("/foo", false, false, 0)
-	assert.Equal(t, w.StartIndex(), eidx)
+	assert.Equal(t, eidx, w.StartIndex())
 	eidx = 2
 	s.CompareAndSwap("/foo", "bar", 0, "baz", v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	e := timeoutSelect(t, w.EventChan())
-	assert.Equal(t, e.EtcdIndex, eidx)
-	assert.Equal(t, e.Action, "compareAndSwap")
-	assert.Equal(t, e.Node.Key, "/foo")
+	assert.Equal(t, eidx, e.EtcdIndex)
+	assert.Equal(t, "compareAndSwap", e.Action)
+	assert.Equal(t, "/foo", e.Node.Key)
 }
 
 // TestStoreWatchRecursiveCompareAndSwap ensures that the
@@ -659,13 +666,13 @@ func TestStoreWatchRecursiveCompareAndSwap(t *testing.T) {
 	var eidx uint64 = 1
 	s.Create("/foo/bar", false, "baz", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	w, _ := s.Watch("/foo", true, false, 0)
-	assert.Equal(t, w.StartIndex(), eidx)
+	assert.Equal(t, eidx, w.StartIndex())
 	eidx = 2
 	s.CompareAndSwap("/foo/bar", "baz", 0, "bat", v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	e := timeoutSelect(t, w.EventChan())
-	assert.Equal(t, e.EtcdIndex, eidx)
-	assert.Equal(t, e.Action, "compareAndSwap")
-	assert.Equal(t, e.Node.Key, "/foo/bar")
+	assert.Equal(t, eidx, e.EtcdIndex)
+	assert.Equal(t, "compareAndSwap", e.Action)
+	assert.Equal(t, "/foo/bar", e.Node.Key)
 }
 
 // TestStoreWatchStream ensures that the store can watch in streaming mode.
@@ -676,26 +683,26 @@ func TestStoreWatchStream(t *testing.T) {
 	// first modification
 	s.Create("/foo", false, "bar", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	e := timeoutSelect(t, w.EventChan())
-	assert.Equal(t, e.EtcdIndex, eidx)
-	assert.Equal(t, e.Action, "create")
-	assert.Equal(t, e.Node.Key, "/foo")
-	assert.Equal(t, *e.Node.Value, "bar")
+	assert.Equal(t, eidx, e.EtcdIndex)
+	assert.Equal(t, "create", e.Action)
+	assert.Equal(t, "/foo", e.Node.Key)
+	assert.Equal(t, "bar", *e.Node.Value)
 	select {
 	case e = <-w.EventChan():
-		testutil.AssertNil(t, e)
+		assert.Nil(t, e)
 	case <-time.After(100 * time.Millisecond):
 	}
 	// second modification
 	eidx = 2
 	s.Update("/foo", "baz", v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	e = timeoutSelect(t, w.EventChan())
-	assert.Equal(t, e.EtcdIndex, eidx)
-	assert.Equal(t, e.Action, "update")
-	assert.Equal(t, e.Node.Key, "/foo")
-	assert.Equal(t, *e.Node.Value, "baz")
+	assert.Equal(t, eidx, e.EtcdIndex)
+	assert.Equal(t, "update", e.Action)
+	assert.Equal(t, "/foo", e.Node.Key)
+	assert.Equal(t, "baz", *e.Node.Value)
 	select {
 	case e = <-w.EventChan():
-		testutil.AssertNil(t, e)
+		assert.Nil(t, e)
 	case <-time.After(100 * time.Millisecond):
 	}
 }
@@ -708,12 +715,12 @@ func TestStoreWatchCreateWithHiddenKey(t *testing.T) {
 	w, _ := s.Watch("/_foo", false, false, 0)
 	s.Create("/_foo", false, "bar", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	e := timeoutSelect(t, w.EventChan())
-	assert.Equal(t, e.EtcdIndex, eidx)
-	assert.Equal(t, e.Action, "create")
-	assert.Equal(t, e.Node.Key, "/_foo")
+	assert.Equal(t, eidx, e.EtcdIndex)
+	assert.Equal(t, "create", e.Action)
+	assert.Equal(t, "/_foo", e.Node.Key)
 	select {
 	case e = <-w.EventChan():
-		testutil.AssertNil(t, e)
+		assert.Nil(t, e)
 	case <-time.After(100 * time.Millisecond):
 	}
 }
@@ -725,18 +732,18 @@ func TestStoreWatchRecursiveCreateWithHiddenKey(t *testing.T) {
 	w, _ := s.Watch("/foo", true, false, 0)
 	s.Create("/foo/_bar", false, "baz", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	e := nbselect(w.EventChan())
-	testutil.AssertNil(t, e)
+	assert.Nil(t, e)
 	w, _ = s.Watch("/foo", true, false, 0)
 	s.Create("/foo/_baz", true, "", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	select {
 	case e = <-w.EventChan():
-		testutil.AssertNil(t, e)
+		assert.Nil(t, e)
 	case <-time.After(100 * time.Millisecond):
 	}
 	s.Create("/foo/_baz/quux", false, "quux", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	select {
 	case e = <-w.EventChan():
-		testutil.AssertNil(t, e)
+		assert.Nil(t, e)
 	case <-time.After(100 * time.Millisecond):
 	}
 }
@@ -749,10 +756,10 @@ func TestStoreWatchUpdateWithHiddenKey(t *testing.T) {
 	w, _ := s.Watch("/_foo", false, false, 0)
 	s.Update("/_foo", "baz", v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	e := timeoutSelect(t, w.EventChan())
-	assert.Equal(t, e.Action, "update")
-	assert.Equal(t, e.Node.Key, "/_foo")
+	assert.Equal(t, "update", e.Action)
+	assert.Equal(t, "/_foo", e.Node.Key)
 	e = nbselect(w.EventChan())
-	testutil.AssertNil(t, e)
+	assert.Nil(t, e)
 }
 
 // TestStoreWatchRecursiveUpdateWithHiddenKey ensures that the store doesn't
@@ -763,7 +770,7 @@ func TestStoreWatchRecursiveUpdateWithHiddenKey(t *testing.T) {
 	w, _ := s.Watch("/foo", true, false, 0)
 	s.Update("/foo/_bar", "baz", v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	e := nbselect(w.EventChan())
-	testutil.AssertNil(t, e)
+	assert.Nil(t, e)
 }
 
 // TestStoreWatchDeleteWithHiddenKey ensures that the store can watch for key deletions.
@@ -774,11 +781,11 @@ func TestStoreWatchDeleteWithHiddenKey(t *testing.T) {
 	w, _ := s.Watch("/_foo", false, false, 0)
 	s.Delete("/_foo", false, false)
 	e := timeoutSelect(t, w.EventChan())
-	assert.Equal(t, e.EtcdIndex, eidx)
-	assert.Equal(t, e.Action, "delete")
-	assert.Equal(t, e.Node.Key, "/_foo")
+	assert.Equal(t, eidx, e.EtcdIndex)
+	assert.Equal(t, "delete", e.Action)
+	assert.Equal(t, "/_foo", e.Node.Key)
 	e = nbselect(w.EventChan())
-	testutil.AssertNil(t, e)
+	assert.Nil(t, e)
 }
 
 // TestStoreWatchRecursiveDeleteWithHiddenKey ensures that the store doesn't see
@@ -789,7 +796,7 @@ func TestStoreWatchRecursiveDeleteWithHiddenKey(t *testing.T) {
 	w, _ := s.Watch("/foo", true, false, 0)
 	s.Delete("/foo/_bar", false, false)
 	e := nbselect(w.EventChan())
-	testutil.AssertNil(t, e)
+	assert.Nil(t, e)
 }
 
 // TestStoreWatchRecursiveCreateDeeperThanHiddenKey ensures that the store does see
@@ -801,10 +808,10 @@ func TestStoreWatchRecursiveCreateDeeperThanHiddenKey(t *testing.T) {
 	s.Create("/_foo/bar/baz", false, "baz", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 
 	e := timeoutSelect(t, w.EventChan())
-	testutil.AssertNotNil(t, e)
-	assert.Equal(t, e.EtcdIndex, eidx)
-	assert.Equal(t, e.Action, "create")
-	assert.Equal(t, e.Node.Key, "/_foo/bar/baz")
+	require.NotNil(t, e)
+	assert.Equal(t, eidx, e.EtcdIndex)
+	assert.Equal(t, "create", e.Action)
+	assert.Equal(t, "/_foo/bar/baz", e.Node.Key)
 }
 
 // TestStoreWatchSlowConsumer ensures that slow consumers are handled properly.

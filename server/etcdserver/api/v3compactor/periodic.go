@@ -16,14 +16,15 @@ package v3compactor
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
-	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
-	"go.etcd.io/etcd/server/v3/storage/mvcc"
-
 	"github.com/jonboulle/clockwork"
 	"go.uber.org/zap"
+
+	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/server/v3/storage/mvcc"
 )
 
 // Periodic compacts the log by purging revisions older than
@@ -71,12 +72,12 @@ Compaction period 1-hour:
 	- failure? update revs, and retry after 1/10 of 1-hour (6-minute)
 
 Compaction period 24-hour:
-  1. compute compaction period, which is 1-hour
-  2. record revisions for every 1/10 of 1-hour (6-minute)
+  1. compute compaction period, which is 24-hour
+  2. record revisions for every 1/10 of 24-hour (144-minute)
   3. keep recording revisions with no compaction for first 24-hour
   4. do compact with revs[0]
 	- success? continue on for-loop and move sliding window; revs = revs[1:]
-	- failure? update revs, and retry after 1/10 of 1-hour (6-minute)
+	- failure? update revs, and retry after 1/10 of 24-hour (144-minute)
 
 Compaction period 59-min:
   1. compute compaction period, which is 59-min
@@ -139,7 +140,7 @@ func (pc *Periodic) Run() {
 			)
 			startTime := pc.clock.Now()
 			_, err := pc.c.Compact(pc.ctx, &pb.CompactionRequest{Revision: rev})
-			if err == nil || err == mvcc.ErrCompacted {
+			if err == nil || errors.Is(err, mvcc.ErrCompacted) {
 				pc.lg.Info(
 					"completed auto periodic compaction",
 					zap.Int64("revision", rev),

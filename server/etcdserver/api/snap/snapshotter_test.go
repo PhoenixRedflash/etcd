@@ -15,6 +15,7 @@
 package snap
 
 import (
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"os"
@@ -42,7 +43,7 @@ var testSnap = &raftpb.Snapshot{
 
 func TestSaveAndLoad(t *testing.T) {
 	dir := filepath.Join(os.TempDir(), "snapshot")
-	err := os.Mkdir(dir, 0700)
+	err := os.Mkdir(dir, 0o700)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +65,7 @@ func TestSaveAndLoad(t *testing.T) {
 
 func TestBadCRC(t *testing.T) {
 	dir := filepath.Join(os.TempDir(), "snapshot")
-	err := os.Mkdir(dir, 0700)
+	err := os.Mkdir(dir, 0o700)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,21 +81,21 @@ func TestBadCRC(t *testing.T) {
 	crcTable = crc32.MakeTable(crc32.Koopman)
 
 	_, err = Read(zaptest.NewLogger(t), filepath.Join(dir, fmt.Sprintf("%016x-%016x.snap", 1, 1)))
-	if err == nil || err != ErrCRCMismatch {
+	if err == nil || !errors.Is(err, ErrCRCMismatch) {
 		t.Errorf("err = %v, want %v", err, ErrCRCMismatch)
 	}
 }
 
 func TestFailback(t *testing.T) {
 	dir := filepath.Join(os.TempDir(), "snapshot")
-	err := os.Mkdir(dir, 0700)
+	err := os.Mkdir(dir, 0o700)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer os.RemoveAll(dir)
 
 	large := fmt.Sprintf("%016x-%016x-%016x.snap", 0xFFFF, 0xFFFF, 0xFFFF)
-	err = os.WriteFile(filepath.Join(dir, large), []byte("bad data"), 0666)
+	err = os.WriteFile(filepath.Join(dir, large), []byte("bad data"), 0o666)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +122,7 @@ func TestFailback(t *testing.T) {
 
 func TestSnapNames(t *testing.T) {
 	dir := filepath.Join(os.TempDir(), "snapshot")
-	err := os.Mkdir(dir, 0700)
+	err := os.Mkdir(dir, 0o700)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +151,7 @@ func TestSnapNames(t *testing.T) {
 
 func TestLoadNewestSnap(t *testing.T) {
 	dir := filepath.Join(os.TempDir(), "snapshot")
-	err := os.Mkdir(dir, 0700)
+	err := os.Mkdir(dir, 0o700)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +171,7 @@ func TestLoadNewestSnap(t *testing.T) {
 
 	cases := []struct {
 		name              string
-		availableWalSnaps []walpb.Snapshot
+		availableWALSnaps []walpb.Snapshot
 		expected          *raftpb.Snapshot
 	}{
 		{
@@ -179,17 +180,17 @@ func TestLoadNewestSnap(t *testing.T) {
 		},
 		{
 			name:              "loadnewestavailable-newest",
-			availableWalSnaps: []walpb.Snapshot{{Index: 0, Term: 0}, {Index: 1, Term: 1}, {Index: 5, Term: 1}},
+			availableWALSnaps: []walpb.Snapshot{{Index: 0, Term: 0}, {Index: 1, Term: 1}, {Index: 5, Term: 1}},
 			expected:          &newSnap,
 		},
 		{
 			name:              "loadnewestavailable-newest-unsorted",
-			availableWalSnaps: []walpb.Snapshot{{Index: 5, Term: 1}, {Index: 1, Term: 1}, {Index: 0, Term: 0}},
+			availableWALSnaps: []walpb.Snapshot{{Index: 5, Term: 1}, {Index: 1, Term: 1}, {Index: 0, Term: 0}},
 			expected:          &newSnap,
 		},
 		{
 			name:              "loadnewestavailable-previous",
-			availableWalSnaps: []walpb.Snapshot{{Index: 0, Term: 0}, {Index: 1, Term: 1}},
+			availableWALSnaps: []walpb.Snapshot{{Index: 0, Term: 0}, {Index: 1, Term: 1}},
 			expected:          testSnap,
 		},
 	}
@@ -197,8 +198,8 @@ func TestLoadNewestSnap(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var err error
 			var g *raftpb.Snapshot
-			if tc.availableWalSnaps != nil {
-				g, err = ss.LoadNewestAvailable(tc.availableWalSnaps)
+			if tc.availableWALSnaps != nil {
+				g, err = ss.LoadNewestAvailable(tc.availableWALSnaps)
 			} else {
 				g, err = ss.Load()
 			}
@@ -214,21 +215,21 @@ func TestLoadNewestSnap(t *testing.T) {
 
 func TestNoSnapshot(t *testing.T) {
 	dir := filepath.Join(os.TempDir(), "snapshot")
-	err := os.Mkdir(dir, 0700)
+	err := os.Mkdir(dir, 0o700)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer os.RemoveAll(dir)
 	ss := New(zaptest.NewLogger(t), dir)
 	_, err = ss.Load()
-	if err != ErrNoSnapshot {
+	if !errors.Is(err, ErrNoSnapshot) {
 		t.Errorf("err = %v, want %v", err, ErrNoSnapshot)
 	}
 }
 
 func TestEmptySnapshot(t *testing.T) {
 	dir := filepath.Join(os.TempDir(), "snapshot")
-	err := os.Mkdir(dir, 0700)
+	err := os.Mkdir(dir, 0o700)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +241,7 @@ func TestEmptySnapshot(t *testing.T) {
 	}
 
 	_, err = Read(zaptest.NewLogger(t), filepath.Join(dir, "1.snap"))
-	if err != ErrEmptySnapshot {
+	if !errors.Is(err, ErrEmptySnapshot) {
 		t.Errorf("err = %v, want %v", err, ErrEmptySnapshot)
 	}
 }
@@ -249,7 +250,7 @@ func TestEmptySnapshot(t *testing.T) {
 // ErrNoSnapshot if all the snapshots are broken.
 func TestAllSnapshotBroken(t *testing.T) {
 	dir := filepath.Join(os.TempDir(), "snapshot")
-	err := os.Mkdir(dir, 0700)
+	err := os.Mkdir(dir, 0o700)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,14 +263,14 @@ func TestAllSnapshotBroken(t *testing.T) {
 
 	ss := New(zaptest.NewLogger(t), dir)
 	_, err = ss.Load()
-	if err != ErrNoSnapshot {
+	if !errors.Is(err, ErrNoSnapshot) {
 		t.Errorf("err = %v, want %v", err, ErrNoSnapshot)
 	}
 }
 
 func TestReleaseSnapDBs(t *testing.T) {
 	dir := filepath.Join(os.TempDir(), "snapshot")
-	err := os.Mkdir(dir, 0700)
+	err := os.Mkdir(dir, 0o700)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +279,7 @@ func TestReleaseSnapDBs(t *testing.T) {
 	snapIndices := []uint64{100, 200, 300, 400}
 	for _, index := range snapIndices {
 		filename := filepath.Join(dir, fmt.Sprintf("%016x.snap.db", index))
-		if err := os.WriteFile(filename, []byte("snap file\n"), 0644); err != nil {
+		if err := os.WriteFile(filename, []byte("snap file\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}

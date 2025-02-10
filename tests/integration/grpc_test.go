@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -103,12 +104,12 @@ func TestAuthority(t *testing.T) {
 				defer kv.Close()
 
 				putRequestMethod := "/etcdserverpb.KV/Put"
-				_, err := kv.Put(context.TODO(), "foo", "bar")
-				if err != nil {
-					t.Fatal(err)
+				for i := 0; i < 100; i++ {
+					_, err := kv.Put(context.TODO(), "foo", "bar")
+					require.NoError(t, err)
 				}
 
-				assertAuthority(t, templateAuthority(t, tc.expectAuthorityPattern, clus.Members[0]), clus, putRequestMethod)
+				assertAuthority(t, tc.expectAuthorityPattern, clus, putRequestMethod)
 			})
 		}
 	}
@@ -119,9 +120,7 @@ func setupTLS(t *testing.T, useTLS bool, cfg integration.ClusterConfig) (integra
 	if useTLS {
 		cfg.ClientTLS = &integration.TestTLSInfo
 		tlsConfig, err := integration.TestTLSInfo.ClientConfig()
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		return cfg, tlsConfig
 	}
 	return cfg, nil
@@ -136,9 +135,7 @@ func setupClient(t *testing.T, endpointPattern string, clus *integration.Cluster
 		DialOptions: []grpc.DialOption{grpc.WithBlock()},
 		TLS:         tlsConfig,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return kv
 }
 
@@ -147,7 +144,7 @@ func templateEndpoints(t *testing.T, pattern string, clus *integration.Cluster) 
 	var endpoints []string
 	for _, m := range clus.Members {
 		ent := pattern
-		ent = strings.ReplaceAll(ent, "${MEMBER_PORT}", m.GrpcPortNumber())
+		ent = strings.ReplaceAll(ent, "${MEMBER_PORT}", m.GRPCPortNumber())
 		ent = strings.ReplaceAll(ent, "${MEMBER_NAME}", m.Name)
 		endpoints = append(endpoints, ent)
 	}
@@ -157,26 +154,28 @@ func templateEndpoints(t *testing.T, pattern string, clus *integration.Cluster) 
 func templateAuthority(t *testing.T, pattern string, m *integration.Member) string {
 	t.Helper()
 	authority := pattern
-	authority = strings.ReplaceAll(authority, "${MEMBER_PORT}", m.GrpcPortNumber())
+	authority = strings.ReplaceAll(authority, "${MEMBER_PORT}", m.GRPCPortNumber())
 	authority = strings.ReplaceAll(authority, "${MEMBER_NAME}", m.Name)
 	return authority
 }
 
-func assertAuthority(t *testing.T, expectedAuthority string, clus *integration.Cluster, filterMethod string) {
+func assertAuthority(t *testing.T, expectedAuthorityPattern string, clus *integration.Cluster, filterMethod string) {
 	t.Helper()
-	requestsFound := 0
 	for _, m := range clus.Members {
+		requestsFound := 0
+		expectedAuthority := templateAuthority(t, expectedAuthorityPattern, m)
 		for _, r := range m.RecordedRequests() {
 			if filterMethod != "" && r.FullMethod != filterMethod {
 				continue
 			}
-			requestsFound++
-			if r.Authority != expectedAuthority {
+			if r.Authority == expectedAuthority {
+				requestsFound++
+			} else {
 				t.Errorf("Got unexpected authority header, member: %q, request: %q, got authority: %q, expected %q", m.Name, r.FullMethod, r.Authority, expectedAuthority)
 			}
 		}
-	}
-	if requestsFound == 0 {
-		t.Errorf("Expected at least one request")
+		if requestsFound == 0 {
+			t.Errorf("Expect at least one request with matched authority header value was recorded by the server intercepter on member %s but got 0", m.Name)
+		}
 	}
 }

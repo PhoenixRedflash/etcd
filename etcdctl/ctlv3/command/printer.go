@@ -19,11 +19,11 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/dustin/go-humanize"
+
 	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
 	v3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/pkg/v3/cobrautl"
-
-	"github.com/dustin/go-humanize"
 )
 
 type printer interface {
@@ -92,7 +92,7 @@ func NewPrinter(printerType string, isHex bool) printer {
 
 type printerRPC struct {
 	printer
-	p func(interface{})
+	p func(any)
 }
 
 func (p *printerRPC) Del(r v3.DeleteResponse)  { p.p((*pb.DeleteRangeResponse)(&r)) }
@@ -111,9 +111,11 @@ func (p *printerRPC) MemberAdd(r v3.MemberAddResponse) { p.p((*pb.MemberAddRespo
 func (p *printerRPC) MemberRemove(id uint64, r v3.MemberRemoveResponse) {
 	p.p((*pb.MemberRemoveResponse)(&r))
 }
+
 func (p *printerRPC) MemberUpdate(id uint64, r v3.MemberUpdateResponse) {
 	p.p((*pb.MemberUpdateResponse)(&r))
 }
+
 func (p *printerRPC) MemberPromote(id uint64, r v3.MemberPromoteResponse) {
 	p.p((*pb.MemberPromoteResponse)(&r))
 }
@@ -134,6 +136,7 @@ func (p *printerRPC) RoleList(r v3.AuthRoleListResponse) { p.p((*pb.AuthRoleList
 func (p *printerRPC) RoleGrantPermission(_ string, r v3.AuthRoleGrantPermissionResponse) {
 	p.p((*pb.AuthRoleGrantPermissionResponse)(&r))
 }
+
 func (p *printerRPC) RoleRevokePermission(_ string, _ string, _ string, r v3.AuthRoleRevokePermissionResponse) {
 	p.p((*pb.AuthRoleRevokePermissionResponse)(&r))
 }
@@ -143,15 +146,19 @@ func (p *printerRPC) UserList(r v3.AuthUserListResponse)         { p.p((*pb.Auth
 func (p *printerRPC) UserChangePassword(r v3.AuthUserChangePasswordResponse) {
 	p.p((*pb.AuthUserChangePasswordResponse)(&r))
 }
+
 func (p *printerRPC) UserGrantRole(_ string, _ string, r v3.AuthUserGrantRoleResponse) {
 	p.p((*pb.AuthUserGrantRoleResponse)(&r))
 }
+
 func (p *printerRPC) UserRevokeRole(_ string, _ string, r v3.AuthUserRevokeRoleResponse) {
 	p.p((*pb.AuthUserRevokeRoleResponse)(&r))
 }
+
 func (p *printerRPC) UserDelete(_ string, r v3.AuthUserDeleteResponse) {
 	p.p((*pb.AuthUserDeleteResponse)(&r))
 }
+
 func (p *printerRPC) AuthStatus(r v3.AuthStatusResponse) {
 	p.p((*pb.AuthStatusResponse)(&r))
 }
@@ -159,7 +166,7 @@ func (p *printerRPC) AuthStatus(r v3.AuthStatusResponse) {
 type printerUnsupported struct{ printerRPC }
 
 func newPrinterUnsupported(n string) printer {
-	f := func(interface{}) {
+	f := func(any) {
 		cobrautl.ExitWithError(cobrautl.ExitBadFeature, errors.New(n+" not supported as output format"))
 	}
 	return &printerUnsupported{printerRPC{nil, f}}
@@ -211,8 +218,10 @@ func makeEndpointHealthTable(healthList []epHealth) (hdr []string, rows [][]stri
 }
 
 func makeEndpointStatusTable(statusList []epStatus) (hdr []string, rows [][]string) {
-	hdr = []string{"endpoint", "ID", "version", "storage version", "db size", "db size in use", "is leader", "is learner", "raft term",
-		"raft index", "raft applied index", "errors"}
+	hdr = []string{
+		"endpoint", "ID", "version", "storage version", "db size", "in use", "percentage not in use", "quota", "is leader", "is learner", "raft term",
+		"raft index", "raft applied index", "errors",
+	}
 	for _, status := range statusList {
 		rows = append(rows, []string{
 			status.Ep,
@@ -221,6 +230,8 @@ func makeEndpointStatusTable(statusList []epStatus) (hdr []string, rows [][]stri
 			status.Resp.StorageVersion,
 			humanize.Bytes(uint64(status.Resp.DbSize)),
 			humanize.Bytes(uint64(status.Resp.DbSizeInUse)),
+			fmt.Sprintf("%d%%", int(float64(100-(status.Resp.DbSizeInUse*100/status.Resp.DbSize)))),
+			humanize.Bytes(uint64(status.Resp.DbSizeQuota)),
 			fmt.Sprint(status.Resp.Leader == status.Resp.Header.MemberId),
 			fmt.Sprint(status.Resp.IsLearner),
 			fmt.Sprint(status.Resp.RaftTerm),

@@ -16,7 +16,6 @@ package mvcc
 
 import (
 	"context"
-	"os"
 	"reflect"
 	"testing"
 	"time"
@@ -30,12 +29,12 @@ import (
 )
 
 func TestScheduleCompaction(t *testing.T) {
-	revs := []revision{{1, 0}, {2, 0}, {3, 0}}
+	revs := []Revision{{Main: 1}, {Main: 2}, {Main: 3}}
 
 	tests := []struct {
 		rev   int64
-		keep  map[revision]struct{}
-		wrevs []revision
+		keep  map[Revision]struct{}
+		wrevs []Revision
 	}{
 		// compact at 1 and discard all history
 		{
@@ -52,23 +51,23 @@ func TestScheduleCompaction(t *testing.T) {
 		// compact at 1 and keeps history one step earlier
 		{
 			1,
-			map[revision]struct{}{
-				{main: 1}: {},
+			map[Revision]struct{}{
+				{Main: 1}: {},
 			},
 			revs,
 		},
 		// compact at 1 and keeps history two steps earlier
 		{
 			3,
-			map[revision]struct{}{
-				{main: 2}: {},
-				{main: 3}: {},
+			map[Revision]struct{}{
+				{Main: 2}: {},
+				{Main: 3}: {},
 			},
 			revs[1:],
 		},
 	}
 	for i, tt := range tests {
-		b, tmpPath := betesting.NewDefaultTmpBackend(t)
+		b, _ := betesting.NewDefaultTmpBackend(t)
 		s := NewStore(zaptest.NewLogger(t), b, &lease.FakeLessor{}, StoreConfig{})
 		fi := newFakeIndex()
 		fi.indexCompactRespc <- tt.keep
@@ -77,9 +76,9 @@ func TestScheduleCompaction(t *testing.T) {
 		tx := s.b.BatchTx()
 
 		tx.Lock()
-		ibytes := newRevBytes()
 		for _, rev := range revs {
-			revToBytes(rev, ibytes)
+			ibytes := NewRevBytes()
+			ibytes = RevToBytes(rev, ibytes)
 			tx.UnsafePut(schema.Key, ibytes, []byte("bar"))
 		}
 		tx.Unlock()
@@ -91,7 +90,8 @@ func TestScheduleCompaction(t *testing.T) {
 
 		tx.Lock()
 		for _, rev := range tt.wrevs {
-			revToBytes(rev, ibytes)
+			ibytes := NewRevBytes()
+			ibytes = RevToBytes(rev, ibytes)
 			keys, _ := tx.UnsafeRange(schema.Key, ibytes, nil, 0)
 			if len(keys) != 1 {
 				t.Errorf("#%d: range on %v = %d, want 1", i, rev, len(keys))
@@ -103,14 +103,14 @@ func TestScheduleCompaction(t *testing.T) {
 		}
 		tx.Unlock()
 
-		cleanup(s, b, tmpPath)
+		cleanup(s, b)
 	}
 }
 
 func TestCompactAllAndRestore(t *testing.T) {
-	b, tmpPath := betesting.NewDefaultTmpBackend(t)
+	b, _ := betesting.NewDefaultTmpBackend(t)
 	s0 := NewStore(zaptest.NewLogger(t), b, &lease.FakeLessor{}, StoreConfig{})
-	defer os.Remove(tmpPath)
+	defer b.Close()
 
 	s0.Put([]byte("foo"), []byte("bar"), lease.NoLease)
 	s0.Put([]byte("foo"), []byte("bar1"), lease.NoLease)
@@ -142,5 +142,9 @@ func TestCompactAllAndRestore(t *testing.T) {
 	_, err = s1.Range(context.TODO(), []byte("foo"), nil, RangeOptions{})
 	if err != nil {
 		t.Errorf("unexpect range error %v", err)
+	}
+	err = s1.Close()
+	if err != nil {
+		t.Fatal(err)
 	}
 }

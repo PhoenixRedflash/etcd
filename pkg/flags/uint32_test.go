@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestUint32Value(t *testing.T) {
@@ -55,14 +56,10 @@ func TestUint32Value(t *testing.T) {
 			err := val.Set(tc.s)
 
 			if tc.expectError {
-				if err == nil {
-					t.Errorf("Expected failure on parsing uint32 value from %s", tc.s)
-				}
+				assert.Errorf(t, err, "Expected failure on parsing uint32 value from %s", tc.s)
 			} else {
-				if err != nil {
-					t.Errorf("Unexpected error when parsing %s: %v", tc.s, err)
-				}
-				assert.Equal(t, uint32(val), tc.expectedVal)
+				require.NoErrorf(t, err, "Unexpected error when parsing %s: %v", tc.s, err)
+				assert.Equal(t, tc.expectedVal, uint32(val))
 			}
 		})
 	}
@@ -101,11 +98,9 @@ func TestUint32FromFlag(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			fs := flag.NewFlagSet("etcd", flag.ContinueOnError)
 			fs.Var(NewUint32Value(tc.defaultVal), flagName, "Maximum concurrent streams that each client can open at a time.")
-			if err := fs.Parse(tc.arguments); err != nil {
-				t.Fatalf("Unexpected error: %v\n", err)
-			}
+			require.NoError(t, fs.Parse(tc.arguments))
 			actualMaxStream := Uint32FromFlag(fs, flagName)
-			assert.Equal(t, actualMaxStream, tc.expectedVal)
+			assert.Equal(t, tc.expectedVal, actualMaxStream)
 		})
 	}
 }

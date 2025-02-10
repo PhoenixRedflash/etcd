@@ -97,7 +97,7 @@ func (m *Monitor) decideClusterVersion() (*semver.Version, error) {
 		}
 		return downgrade.GetTargetVersion(), nil
 	}
-	if clusterVersion.LessThan(*minimalServerVersion) && IsValidVersionChange(clusterVersion, minimalServerVersion) {
+	if clusterVersion.LessThan(*minimalServerVersion) && IsValidClusterVersionChange(clusterVersion, minimalServerVersion) {
 		return minimalServerVersion, nil
 	}
 	return nil, nil
@@ -106,7 +106,7 @@ func (m *Monitor) decideClusterVersion() (*semver.Version, error) {
 // UpdateStorageVersionIfNeeded updates the storage version if it differs from cluster version.
 func (m *Monitor) UpdateStorageVersionIfNeeded() {
 	cv := m.s.GetClusterVersion()
-	if cv == nil {
+	if cv == nil || cv.String() == version.MinClusterVersion {
 		return
 	}
 	sv := m.s.GetStorageVersion()

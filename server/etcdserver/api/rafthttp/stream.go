@@ -16,6 +16,7 @@ package rafthttp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,16 +25,16 @@ import (
 	"sync"
 	"time"
 
+	"github.com/coreos/go-semver/semver"
+	"go.uber.org/zap"
+	"golang.org/x/time/rate"
+
 	"go.etcd.io/etcd/api/v3/version"
 	"go.etcd.io/etcd/client/pkg/v3/transport"
 	"go.etcd.io/etcd/client/pkg/v3/types"
 	"go.etcd.io/etcd/pkg/v3/httputil"
 	stats "go.etcd.io/etcd/server/v3/etcdserver/api/v2stats"
 	"go.etcd.io/raft/v3/raftpb"
-
-	"github.com/coreos/go-semver/semver"
-	"go.uber.org/zap"
-	"golang.org/x/time/rate"
 )
 
 const (
@@ -89,12 +90,10 @@ func (t streamType) String() string {
 	}
 }
 
-var (
-	// linkHeartbeatMessage is a special message used as heartbeat message in
-	// link layer. It never conflicts with messages from raft because raft
-	// doesn't send out messages without From and To fields.
-	linkHeartbeatMessage = raftpb.Message{Type: raftpb.MsgHeartbeat}
-)
+// linkHeartbeatMessage is a special message used as heartbeat message in
+// link layer. It never conflicts with messages from raft because raft
+// doesn't send out messages without From and To fields.
+var linkHeartbeatMessage = raftpb.Message{Type: raftpb.MsgHeartbeat}
 
 func isLinkHeartbeatMessage(m *raftpb.Message) bool {
 	return m.Type == raftpb.MsgHeartbeat && m.From == 0 && m.To == 0
@@ -403,7 +402,7 @@ func (cr *streamReader) run() {
 	for {
 		rc, err := cr.dial(t)
 		if err != nil {
-			if err != errUnsupportedStreamType {
+			if !errors.Is(err, errUnsupportedStreamType) {
 				cr.status.deactivate(failureType{source: t.String(), action: "dial"}, err.Error())
 			}
 		} else {
@@ -428,7 +427,7 @@ func (cr *streamReader) run() {
 			}
 			switch {
 			// all data is read out
-			case err == io.EOF:
+			case errors.Is(err, io.EOF):
 			// connection is closed by the remote
 			case transport.IsClosedConnError(err):
 			default:
@@ -577,7 +576,7 @@ func (cr *streamReader) dial(t streamType) (io.ReadCloser, error) {
 	req, err := http.NewRequest(http.MethodGet, uu.String(), nil)
 	if err != nil {
 		cr.picker.unreachable(u)
-		return nil, fmt.Errorf("failed to make http request to %v (%v)", u, err)
+		return nil, fmt.Errorf("failed to make http request to %v (%w)", u, err)
 	}
 	req.Header.Set("X-Server-From", cr.tr.ID.String())
 	req.Header.Set("X-Server-Version", version.Version)
@@ -648,7 +647,7 @@ func (cr *streamReader) dial(t streamType) (io.ReadCloser, error) {
 			}
 			return nil, errIncompatibleVersion
 
-		case errClusterIDMismatch.Error():
+		case ErrClusterIDMismatch.Error():
 			if cr.lg != nil {
 				cr.lg.Warn(
 					"request sent was ignored by remote peer due to cluster ID mismatch",
@@ -656,10 +655,10 @@ func (cr *streamReader) dial(t streamType) (io.ReadCloser, error) {
 					zap.String("remote-peer-cluster-id", resp.Header.Get("X-Etcd-Cluster-ID")),
 					zap.String("local-member-id", cr.tr.ID.String()),
 					zap.String("local-member-cluster-id", cr.tr.ClusterID.String()),
-					zap.Error(errClusterIDMismatch),
+					zap.Error(ErrClusterIDMismatch),
 				)
 			}
-			return nil, errClusterIDMismatch
+			return nil, ErrClusterIDMismatch
 
 		default:
 			return nil, fmt.Errorf("unhandled error %q when precondition failed", string(b))

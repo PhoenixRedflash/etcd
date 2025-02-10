@@ -34,7 +34,7 @@ import (
 )
 
 // GetLogger returns the logger.
-func (cfg Config) GetLogger() *zap.Logger {
+func (cfg *Config) GetLogger() *zap.Logger {
 	cfg.loggerMu.RLock()
 	l := cfg.logger
 	cfg.loggerMu.RUnlock()
@@ -165,35 +165,38 @@ func (cfg *Config) setupLogging() error {
 			return err
 		}
 
-		logTLSHandshakeFailure := func(conn *tls.Conn, err error) {
-			state := conn.ConnectionState()
-			remoteAddr := conn.RemoteAddr().String()
-			serverName := state.ServerName
-			if len(state.PeerCertificates) > 0 {
-				cert := state.PeerCertificates[0]
-				ips := make([]string, len(cert.IPAddresses))
-				for i := range cert.IPAddresses {
-					ips[i] = cert.IPAddresses[i].String()
+		logTLSHandshakeFailureFunc := func(msg string) func(conn *tls.Conn, err error) {
+			return func(conn *tls.Conn, err error) {
+				state := conn.ConnectionState()
+				remoteAddr := conn.RemoteAddr().String()
+				serverName := state.ServerName
+				if len(state.PeerCertificates) > 0 {
+					cert := state.PeerCertificates[0]
+					ips := make([]string, len(cert.IPAddresses))
+					for i := range cert.IPAddresses {
+						ips[i] = cert.IPAddresses[i].String()
+					}
+					cfg.logger.Warn(
+						msg,
+						zap.String("remote-addr", remoteAddr),
+						zap.String("server-name", serverName),
+						zap.Strings("ip-addresses", ips),
+						zap.Strings("dns-names", cert.DNSNames),
+						zap.Error(err),
+					)
+				} else {
+					cfg.logger.Warn(
+						msg,
+						zap.String("remote-addr", remoteAddr),
+						zap.String("server-name", serverName),
+						zap.Error(err),
+					)
 				}
-				cfg.logger.Warn(
-					"rejected connection",
-					zap.String("remote-addr", remoteAddr),
-					zap.String("server-name", serverName),
-					zap.Strings("ip-addresses", ips),
-					zap.Strings("dns-names", cert.DNSNames),
-					zap.Error(err),
-				)
-			} else {
-				cfg.logger.Warn(
-					"rejected connection",
-					zap.String("remote-addr", remoteAddr),
-					zap.String("server-name", serverName),
-					zap.Error(err),
-				)
 			}
 		}
-		cfg.ClientTLSInfo.HandshakeFailure = logTLSHandshakeFailure
-		cfg.PeerTLSInfo.HandshakeFailure = logTLSHandshakeFailure
+
+		cfg.ClientTLSInfo.HandshakeFailure = logTLSHandshakeFailureFunc("rejected connection on client endpoint")
+		cfg.PeerTLSInfo.HandshakeFailure = logTLSHandshakeFailureFunc("rejected connection on peer endpoint")
 
 	default:
 		return fmt.Errorf("unknown logger option %q", cfg.Logger)
@@ -246,7 +249,7 @@ func (logRotationConfig) Sync() error { return nil }
 
 // setupLogRotation initializes log rotation for a single file path target.
 func setupLogRotation(logOutputs []string, logRotateConfigJSON string) error {
-	var logRotationConfig logRotationConfig
+	var logRotationCfg logRotationConfig
 	outputFilePaths := 0
 	for _, v := range logOutputs {
 		switch v {
@@ -265,21 +268,21 @@ func setupLogRotation(logOutputs []string, logRotateConfigJSON string) error {
 		return ErrLogRotationInvalidLogOutput
 	}
 
-	if err := json.Unmarshal([]byte(logRotateConfigJSON), &logRotationConfig); err != nil {
+	if err := json.Unmarshal([]byte(logRotateConfigJSON), &logRotationCfg); err != nil {
 		var unmarshalTypeError *json.UnmarshalTypeError
 		var syntaxError *json.SyntaxError
 		switch {
 		case errors.As(err, &syntaxError):
-			return fmt.Errorf("improperly formatted log rotation config: %v", err)
+			return fmt.Errorf("improperly formatted log rotation config: %w", err)
 		case errors.As(err, &unmarshalTypeError):
-			return fmt.Errorf("invalid log rotation config: %v", err)
+			return fmt.Errorf("invalid log rotation config: %w", err)
 		default:
-			return fmt.Errorf("fail to unmarshal log rotation config: %v", err)
+			return fmt.Errorf("fail to unmarshal log rotation config: %w", err)
 		}
 	}
 	zap.RegisterSink("rotate", func(u *url.URL) (zap.Sink, error) {
-		logRotationConfig.Filename = u.Path[1:]
-		return &logRotationConfig, nil
+		logRotationCfg.Filename = u.Path[1:]
+		return &logRotationCfg, nil
 	})
 	return nil
 }

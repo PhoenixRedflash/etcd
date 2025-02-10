@@ -25,12 +25,13 @@ import (
 )
 
 func BenchmarkKVWatcherMemoryUsage(b *testing.B) {
-	be, tmpPath := betesting.NewDefaultTmpBackend(b)
-	watchable := newWatchableStore(zaptest.NewLogger(b), be, &lease.FakeLessor{}, StoreConfig{})
+	be, _ := betesting.NewDefaultTmpBackend(b)
+	watchable := New(zaptest.NewLogger(b), be, &lease.FakeLessor{}, StoreConfig{})
 
-	defer cleanup(watchable, be, tmpPath)
+	defer cleanup(watchable, be)
 
 	w := watchable.NewWatchStream()
+	defer w.Close()
 
 	b.ReportAllocs()
 	b.StartTimer()

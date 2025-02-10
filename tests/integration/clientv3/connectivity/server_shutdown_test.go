@@ -17,9 +17,12 @@ package connectivity_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -38,15 +41,13 @@ func TestBalancerUnderServerShutdownWatch(t *testing.T) {
 	})
 	defer clus.Terminate(t)
 
-	eps := []string{clus.Members[0].GRPCURL(), clus.Members[1].GRPCURL(), clus.Members[2].GRPCURL()}
+	eps := []string{clus.Members[0].GRPCURL, clus.Members[1].GRPCURL, clus.Members[2].GRPCURL}
 
 	lead := clus.WaitLeader(t)
 
 	// pin eps[lead]
 	watchCli, err := integration2.NewClient(t, clientv3.Config{Endpoints: []string{eps[lead]}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer watchCli.Close()
 
 	// wait for eps[lead] to be pinned
@@ -90,9 +91,7 @@ func TestBalancerUnderServerShutdownWatch(t *testing.T) {
 
 	// writes to eps[lead+1]
 	putCli, err := integration2.NewClient(t, clientv3.Config{Endpoints: []string{eps[(lead+1)%3]}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer putCli.Close()
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -101,7 +100,7 @@ func TestBalancerUnderServerShutdownWatch(t *testing.T) {
 		if err == nil {
 			break
 		}
-		if clientv3test.IsClientTimeout(err) || clientv3test.IsServerCtxTimeout(err) || err == rpctypes.ErrTimeout || err == rpctypes.ErrTimeoutDueToLeaderFail {
+		if clientv3test.IsClientTimeout(err) || clientv3test.IsServerCtxTimeout(err) || errors.Is(err, rpctypes.ErrTimeout) || errors.Is(err, rpctypes.ErrTimeoutDueToLeaderFail) {
 			continue
 		}
 		t.Fatal(err)
@@ -149,13 +148,11 @@ func testBalancerUnderServerShutdownMutable(t *testing.T, op func(*clientv3.Clie
 	})
 	defer clus.Terminate(t)
 
-	eps := []string{clus.Members[0].GRPCURL(), clus.Members[1].GRPCURL(), clus.Members[2].GRPCURL()}
+	eps := []string{clus.Members[0].GRPCURL, clus.Members[1].GRPCURL, clus.Members[2].GRPCURL}
 
 	// pin eps[0]
 	cli, err := integration2.NewClient(t, clientv3.Config{Endpoints: []string{eps[0]}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer cli.Close()
 
 	// wait for eps[0] to be pinned
@@ -176,9 +173,7 @@ func testBalancerUnderServerShutdownMutable(t *testing.T, op func(*clientv3.Clie
 	cctx, ccancel := context.WithTimeout(context.Background(), time.Second)
 	err = op(cli, cctx)
 	ccancel()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 }
 
 func TestBalancerUnderServerShutdownGetLinearizable(t *testing.T) {
@@ -206,7 +201,7 @@ func testBalancerUnderServerShutdownImmutable(t *testing.T, op func(*clientv3.Cl
 	})
 	defer clus.Terminate(t)
 
-	eps := []string{clus.Members[0].GRPCURL(), clus.Members[1].GRPCURL(), clus.Members[2].GRPCURL()}
+	eps := []string{clus.Members[0].GRPCURL, clus.Members[1].GRPCURL, clus.Members[2].GRPCURL}
 
 	// pin eps[0]
 	cli, err := integration2.NewClient(t, clientv3.Config{Endpoints: []string{eps[0]}})
@@ -283,9 +278,9 @@ func testBalancerUnderServerStopInflightRangeOnRestart(t *testing.T, linearizabl
 
 	clus := integration2.NewCluster(t, cfg)
 	defer clus.Terminate(t)
-	eps := []string{clus.Members[0].GRPCURL(), clus.Members[1].GRPCURL()}
+	eps := []string{clus.Members[0].GRPCURL, clus.Members[1].GRPCURL}
 	if linearizable {
-		eps = append(eps, clus.Members[2].GRPCURL())
+		eps = append(eps, clus.Members[2].GRPCURL)
 	}
 
 	lead := clus.WaitLeader(t)

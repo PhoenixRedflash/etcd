@@ -16,11 +16,11 @@ package wal
 
 import (
 	"bytes"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
 	"math"
-	"math/rand"
 	"os"
 	"path"
 	"path/filepath"
@@ -39,20 +39,16 @@ import (
 	"go.etcd.io/raft/v3/raftpb"
 )
 
-var (
-	confState = raftpb.ConfState{
-		Voters:    []uint64{0x00ffca74},
-		AutoLeave: false,
-	}
-)
+var confState = raftpb.ConfState{
+	Voters:    []uint64{0x00ffca74},
+	AutoLeave: false,
+}
 
 func TestNew(t *testing.T) {
 	p := t.TempDir()
 
 	w, err := Create(zaptest.NewLogger(t), p, []byte("somedata"))
-	if err != nil {
-		t.Fatalf("err = %v, want nil", err)
-	}
+	require.NoErrorf(t, err, "err = %v, want nil", err)
 	if g := filepath.Base(w.tail().Name()); g != walName(0, 0) {
 		t.Errorf("name = %+v, want %+v", g, walName(0, 0))
 	}
@@ -76,23 +72,87 @@ func TestNew(t *testing.T) {
 	var wb bytes.Buffer
 	e := newEncoder(&wb, 0, 0)
 	err = e.encode(&walpb.Record{Type: CrcType, Crc: 0})
-	if err != nil {
-		t.Fatalf("err = %v, want nil", err)
-	}
+	require.NoErrorf(t, err, "err = %v, want nil", err)
 	err = e.encode(&walpb.Record{Type: MetadataType, Data: []byte("somedata")})
-	if err != nil {
-		t.Fatalf("err = %v, want nil", err)
-	}
+	require.NoErrorf(t, err, "err = %v, want nil", err)
 	r := &walpb.Record{
 		Type: SnapshotType,
 		Data: pbutil.MustMarshal(&walpb.Snapshot{}),
 	}
-	if err = e.encode(r); err != nil {
-		t.Fatalf("err = %v, want nil", err)
-	}
+	err = e.encode(r)
+	require.NoErrorf(t, err, "err = %v, want nil", err)
 	e.flush()
 	if !bytes.Equal(gd, wb.Bytes()) {
 		t.Errorf("data = %v, want %v", gd, wb.Bytes())
+	}
+}
+
+func TestCreateNewWALFile(t *testing.T) {
+	tests := []struct {
+		name     string
+		fileType any
+		forceNew bool
+	}{
+		{
+			name:     "creating standard file should succeed and not truncate file",
+			fileType: &os.File{},
+			forceNew: false,
+		},
+		{
+			name:     "creating locked file should succeed and not truncate file",
+			fileType: &fileutil.LockedFile{},
+			forceNew: false,
+		},
+		{
+			name:     "creating standard file with forceNew should truncate file",
+			fileType: &os.File{},
+			forceNew: true,
+		},
+		{
+			name:     "creating locked file with forceNew should truncate file",
+			fileType: &fileutil.LockedFile{},
+			forceNew: true,
+		},
+	}
+
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := filepath.Join(t.TempDir(), walName(0, uint64(i)))
+
+			// create initial file with some data to verify truncate behavior
+			err := os.WriteFile(p, []byte("test data"), fileutil.PrivateFileMode)
+			require.NoError(t, err)
+
+			var f any
+			switch tt.fileType.(type) {
+			case *os.File:
+				f, err = createNewWALFile[*os.File](p, tt.forceNew)
+				require.IsType(t, &os.File{}, f)
+			case *fileutil.LockedFile:
+				f, err = createNewWALFile[*fileutil.LockedFile](p, tt.forceNew)
+				require.IsType(t, &fileutil.LockedFile{}, f)
+			default:
+				panic("unknown file type")
+			}
+
+			require.NoError(t, err)
+
+			// validate the file permissions
+			fi, err := os.Stat(p)
+			require.NoError(t, err)
+			expectedPerms := fmt.Sprintf("%o", os.FileMode(fileutil.PrivateFileMode))
+			actualPerms := fmt.Sprintf("%o", fi.Mode().Perm())
+			require.Equalf(t, expectedPerms, actualPerms, "unexpected file permissions on %q", p)
+
+			content, err := os.ReadFile(p)
+			require.NoError(t, err)
+
+			if tt.forceNew {
+				require.Emptyf(t, string(content), "file content should be truncated but it wasn't")
+			} else {
+				require.Equalf(t, "test data", string(content), "file content should not be truncated but it was")
+			}
+		})
 	}
 }
 
@@ -101,9 +161,7 @@ func TestCreateFailFromPollutedDir(t *testing.T) {
 	os.WriteFile(filepath.Join(p, "test.wal"), []byte("data"), os.ModeTemporary)
 
 	_, err := Create(zaptest.NewLogger(t), p, []byte("data"))
-	if err != os.ErrExist {
-		t.Fatalf("expected %v, got %v", os.ErrExist, err)
-	}
+	require.ErrorIsf(t, err, os.ErrExist, "expected %v, got %v", os.ErrExist, err)
 }
 
 func TestWalCleanup(t *testing.T) {
@@ -115,17 +173,11 @@ func TestWalCleanup(t *testing.T) {
 
 	logger := zaptest.NewLogger(t)
 	w, err := Create(logger, p, []byte(""))
-	if err != nil {
-		t.Fatalf("err = %v, want nil", err)
-	}
+	require.NoErrorf(t, err, "err = %v, want nil", err)
 	w.cleanupWAL(logger)
 	fnames, err := fileutil.ReadDir(testRoot)
-	if err != nil {
-		t.Fatalf("err = %v, want nil", err)
-	}
-	if len(fnames) != 1 {
-		t.Fatalf("expected 1 file under %v, got %v", testRoot, len(fnames))
-	}
+	require.NoErrorf(t, err, "err = %v, want nil", err)
+	require.Lenf(t, fnames, 1, "expected 1 file under %v, got %v", testRoot, len(fnames))
 	pattern := fmt.Sprintf(`%s.broken\.[\d]{8}\.[\d]{6}\.[\d]{1,6}?`, filepath.Base(p))
 	match, _ := regexp.MatchString(pattern, fnames[0])
 	if !match {
@@ -143,16 +195,14 @@ func TestCreateFailFromNoSpaceLeft(t *testing.T) {
 	SegmentSizeBytes = math.MaxInt64
 
 	_, err := Create(zaptest.NewLogger(t), p, []byte("data"))
-	if err == nil { // no space left on device
-		t.Fatalf("expected error 'no space left on device', got nil")
-	}
+	require.Errorf(t, err, "expected error 'no space left on device', got nil") // no space left on device
 }
 
 func TestNewForInitedDir(t *testing.T) {
 	p := t.TempDir()
 
 	os.Create(filepath.Join(p, walName(0, 0)))
-	if _, err := Create(zaptest.NewLogger(t), p, nil); err == nil || err != os.ErrExist {
+	if _, err := Create(zaptest.NewLogger(t), p, nil); err == nil || !errors.Is(err, os.ErrExist) {
 		t.Errorf("err = %v, want %v", err, os.ErrExist)
 	}
 }
@@ -167,9 +217,7 @@ func TestOpenAtIndex(t *testing.T) {
 	f.Close()
 
 	w, err := Open(zaptest.NewLogger(t), dir, walpb.Snapshot{})
-	if err != nil {
-		t.Fatalf("err = %v, want nil", err)
-	}
+	require.NoErrorf(t, err, "err = %v, want nil", err)
 	if g := filepath.Base(w.tail().Name()); g != walName(0, 0) {
 		t.Errorf("name = %+v, want %+v", g, walName(0, 0))
 	}
@@ -186,9 +234,7 @@ func TestOpenAtIndex(t *testing.T) {
 	f.Close()
 
 	w, err = Open(zaptest.NewLogger(t), dir, walpb.Snapshot{Index: 5})
-	if err != nil {
-		t.Fatalf("err = %v, want nil", err)
-	}
+	require.NoErrorf(t, err, "err = %v, want nil", err)
 	if g := filepath.Base(w.tail().Name()); g != wname {
 		t.Errorf("name = %+v, want %+v", g, wname)
 	}
@@ -229,7 +275,7 @@ func TestVerify(t *testing.T) {
 	}
 
 	hs := raftpb.HardState{Term: 1, Vote: 3, Commit: 5}
-	assert.NoError(t, w.Save(hs, nil))
+	require.NoError(t, w.Save(hs, nil))
 
 	// to verify the WAL is not corrupted at this point
 	hardstate, err := Verify(lg, walDir, walpb.Snapshot{})
@@ -347,9 +393,7 @@ func TestSaveWithCut(t *testing.T) {
 	w.Close()
 
 	neww, err := Open(zaptest.NewLogger(t), p, walpb.Snapshot{})
-	if err != nil {
-		t.Fatalf("err = %v, want nil", err)
-	}
+	require.NoErrorf(t, err, "err = %v, want nil", err)
 	defer neww.Close()
 	wname := walName(1, index)
 	if g := filepath.Base(neww.tail().Name()); g != wname {
@@ -628,9 +672,7 @@ func TestOpenForRead(t *testing.T) {
 	}
 	defer w2.Close()
 	_, _, ents, err := w2.ReadAll()
-	if err != nil {
-		t.Fatalf("err = %v, want nil", err)
-	}
+	require.NoErrorf(t, err, "err = %v, want nil", err)
 	if g := ents[len(ents)-1].Index; g != 9 {
 		t.Errorf("last index read = %d, want %d", g, 9)
 	}
@@ -663,9 +705,7 @@ func TestOpenWithMaxIndex(t *testing.T) {
 	defer w2.Close()
 
 	_, _, _, err = w2.ReadAll()
-	if err != ErrSliceOutOfRange {
-		t.Fatalf("err = %v, want ErrSliceOutOfRange", err)
-	}
+	require.ErrorIsf(t, err, ErrSliceOutOfRange, "err = %v, want ErrSliceOutOfRange", err)
 }
 
 func TestSaveEmpty(t *testing.T) {
@@ -784,9 +824,7 @@ func TestTailWriteNoSlackSpace(t *testing.T) {
 	if rerr != nil {
 		t.Fatal(rerr)
 	}
-	if len(ents) != 5 {
-		t.Fatalf("got entries %+v, expected 5 entries", ents)
-	}
+	require.Lenf(t, ents, 5, "got entries %+v, expected 5 entries", ents)
 	// write more entries
 	for i := 6; i <= 10; i++ {
 		es := []raftpb.Entry{{Index: uint64(i), Term: 1, Data: []byte{byte(i)}}}
@@ -853,7 +891,7 @@ func TestOpenOnTornWrite(t *testing.T) {
 	p := t.TempDir()
 	w, err := Create(zaptest.NewLogger(t), p, nil)
 	defer func() {
-		if err = w.Close(); err != nil && err != os.ErrInvalid {
+		if err = w.Close(); err != nil && !errors.Is(err, os.ErrInvalid) {
 			t.Fatal(err)
 		}
 	}()
@@ -925,9 +963,7 @@ func TestOpenOnTornWrite(t *testing.T) {
 		t.Fatal(rerr)
 	}
 	wEntries := (clobberIdx - 1) + overwriteEntries
-	if len(ents) != wEntries {
-		t.Fatalf("expected len(ents) = %d, got %d", wEntries, len(ents))
-	}
+	require.Equalf(t, len(ents), wEntries, "expected len(ents) = %d, got %d", wEntries, len(ents))
 }
 
 func TestRenameFail(t *testing.T) {
@@ -964,7 +1000,7 @@ func TestReadAllFail(t *testing.T) {
 	f.Close()
 	// try to read without opening the WAL
 	_, _, _, err = f.ReadAll()
-	if err == nil || err != ErrDecoderNotFound {
+	if err == nil || !errors.Is(err, ErrDecoderNotFound) {
 		t.Fatalf("err = %v, want ErrDecoderNotFound", err)
 	}
 }
@@ -1057,7 +1093,6 @@ func TestValidSnapshotEntriesAfterPurgeWal(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-
 	}()
 	files, _, err := selectWALFiles(nil, p, snap0)
 	if err != nil {

@@ -48,6 +48,18 @@ type binPath struct {
 	EtcdLastRelease string
 	Etcdctl         string
 	Etcdutl         string
+	LazyFS          string
+}
+
+func (bp *binPath) LazyFSAvailable() bool {
+	_, err := os.Stat(bp.LazyFS)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			panic(err)
+		}
+		return false
+	}
+	return true
 }
 
 func InitFlags() {
@@ -57,10 +69,21 @@ func InitFlags() {
 	certDirDef := FixturesDir
 
 	binDir := flag.String("bin-dir", binDirDef, "The directory for store etcd and etcdctl binaries.")
+	binLastRelease := flag.String("bin-last-release", "", "The path for the last release etcd binary.")
+
 	flag.StringVar(&CertDir, "cert-dir", certDirDef, "The directory for store certificate files.")
 	flag.Parse()
 
-	BinPath = initBinPath(*binDir)
+	BinPath = binPath{
+		Etcd:            *binDir + "/etcd",
+		EtcdLastRelease: *binDir + "/etcd-last-release",
+		Etcdctl:         *binDir + "/etcdctl",
+		Etcdutl:         *binDir + "/etcdutl",
+		LazyFS:          *binDir + "/lazyfs",
+	}
+	if *binLastRelease != "" {
+		BinPath.EtcdLastRelease = *binLastRelease
+	}
 	CertPath = CertDir + "/server.crt"
 	PrivateKeyPath = CertDir + "/server.key.insecure"
 	CaPath = CertDir + "/ca.crt"

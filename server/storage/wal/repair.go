@@ -67,7 +67,7 @@ func Repair(lg *zap.Logger, dirpath string) bool {
 
 		case errors.Is(err, io.ErrUnexpectedEOF):
 			brokenName := f.Name() + ".broken"
-			bf, bferr := os.Create(brokenName)
+			bf, bferr := createNewWALFile[*os.File](brokenName, true)
 			if bferr != nil {
 				lg.Warn("failed to create backup file", zap.String("path", brokenName), zap.Error(bferr))
 				return false

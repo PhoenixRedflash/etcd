@@ -46,7 +46,7 @@ func TestAuthCluster(t *testing.T) {
 		}
 	}()
 
-	epcClient := epc.Client()
+	epcClient := epc.Etcdctl()
 	createUsers(ctx, t, epcClient)
 
 	if err := epcClient.AuthEnable(ctx); err != nil {
@@ -58,28 +58,28 @@ func TestAuthCluster(t *testing.T) {
 
 	// write more than SnapshotCount keys to single leader to make sure snapshot is created
 	for i := 0; i <= 10; i++ {
-		if err := epc.Client(testUserClientOpts).Put(ctx, fmt.Sprintf("/test/%d", i), "test", config.PutOptions{}); err != nil {
+		if err := epc.Etcdctl(testUserClientOpts).Put(ctx, fmt.Sprintf("/test/%d", i), "test", config.PutOptions{}); err != nil {
 			t.Fatalf("failed to Put (%v)", err)
 		}
 	}
 
 	// start second process
-	if err := epc.StartNewProc(ctx, nil, t, rootUserClientOpts); err != nil {
+	if _, err := epc.StartNewProc(ctx, nil, t, false /* addAsLearner */, rootUserClientOpts); err != nil {
 		t.Fatalf("could not start second etcd process (%v)", err)
 	}
 
 	// make sure writes to both endpoints are successful
-	endpoints := epc.EndpointsV3()
-	assert.Equal(t, len(endpoints), 2)
-	for _, endpoint := range epc.EndpointsV3() {
-		if err := epc.Client(testUserClientOpts, e2e.WithEndpoints([]string{endpoint})).Put(ctx, "/test/key", endpoint, config.PutOptions{}); err != nil {
+	endpoints := epc.EndpointsGRPC()
+	assert.Len(t, endpoints, 2)
+	for _, endpoint := range epc.EndpointsGRPC() {
+		if err := epc.Etcdctl(testUserClientOpts, e2e.WithEndpoints([]string{endpoint})).Put(ctx, "/test/key", endpoint, config.PutOptions{}); err != nil {
 			t.Fatalf("failed to write to Put to %q (%v)", endpoint, err)
 		}
 	}
 
 	// verify all nodes have exact same revision and hash
 	assert.Eventually(t, func() bool {
-		hashKvs, err := epc.Client(rootUserClientOpts).HashKV(ctx, 0)
+		hashKvs, err := epc.Etcdctl(rootUserClientOpts).HashKV(ctx, 0)
 		if err != nil {
 			t.Logf("failed to get HashKV: %v", err)
 			return false
@@ -95,7 +95,6 @@ func TestAuthCluster(t *testing.T) {
 		assert.Equal(t, hashKvs[0].Hash, hashKvs[1].Hash)
 		return true
 	}, time.Second*5, time.Millisecond*100)
-
 }
 
 func applyTLSWithRootCommonName() func() {

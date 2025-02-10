@@ -8,9 +8,31 @@ import "etcd/api/versionpb/version.proto";
 
 // for grpc-gateway
 import "google/api/annotations.proto";
+import "protoc-gen-openapiv2/options/annotations.proto";
+
+option go_package = "go.etcd.io/etcd/api/v3/etcdserverpb";
 
 option (gogoproto.marshaler_all) = true;
 option (gogoproto.unmarshaler_all) = true;
+
+option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_swagger) = {
+  security_definitions: {
+    security: {
+      key: "ApiKey";
+      value: {
+        type: TYPE_API_KEY;
+        in: IN_HEADER;
+        name: "Authorization";
+      }
+    }
+  }
+  security: {
+    security_requirement: {
+      key: "ApiKey";
+      value: {};
+    }
+  }
+};
 
 service KV {
   // Range gets the keys in the range from the key-value store.
@@ -218,7 +240,7 @@ service Maintenance {
   // It only iterates "key" bucket in backend storage.
   rpc HashKV(HashKVRequest) returns (HashKVResponse) {
       option (google.api.http) = {
-        post: "/v3/maintenance/hash"
+        post: "/v3/maintenance/hashkv"
         body: "*"
     };
   }
@@ -814,7 +836,8 @@ message WatchResponse {
   // All events sent to the created watcher will attach with the same watch_id.
   bool created = 3;
 
-  // canceled is set to true if the response is for a cancel watch request.
+  // canceled is set to true if the response is for a cancel watch request
+  // or if the start_revision has already been compacted.
   // No further events will be sent to the canceled watcher.
   bool canceled = 4;
 
@@ -1135,6 +1158,16 @@ message DowngradeResponse {
   string version = 2;
 }
 
+// DowngradeVersionTestRequest is used for test only. The version in
+// this request will be read as the WAL record version.If the downgrade
+// target version is less than this version, then the downgrade(online)
+// or migration(offline) isn't safe, so shouldn't be allowed.
+message DowngradeVersionTestRequest {
+  option (versionpb.etcd_version_msg) = "3.6";
+
+  string ver = 1;
+}
+
 message StatusRequest {
   option (versionpb.etcd_version_msg) = "3.0";
 }
@@ -1163,6 +1196,8 @@ message StatusResponse {
   bool isLearner = 10 [(versionpb.etcd_version_field)="3.4"];
   // storageVersion is the version of the db file. It might be get updated with delay in relationship to the target cluster version.
   string storageVersion = 11 [(versionpb.etcd_version_field)="3.6"];
+  // dbSizeQuota is the configured etcd storage quota in bytes (the value passed to etcd instance by flag --quota-backend-bytes)
+  int64 dbSizeQuota = 12 [(versionpb.etcd_version_field)="3.6"];
 }
 
 message AuthEnableRequest {

@@ -17,6 +17,7 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -27,6 +28,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coreos/go-semver/semver"
 	"go.uber.org/zap"
 
 	"go.etcd.io/etcd/client/pkg/v3/fileutil"
@@ -35,16 +37,14 @@ import (
 	"go.etcd.io/etcd/tests/v3/framework/config"
 )
 
-var (
-	EtcdServerReadyLines = []string{"ready to serve client requests"}
-)
+var EtcdServerReadyLines = []string{"ready to serve client requests"}
 
 // EtcdProcess is a process that serves etcd requests.
 type EtcdProcess interface {
-	EndpointsV2() []string
-	EndpointsV3() []string
+	EndpointsGRPC() []string
+	EndpointsHTTP() []string
 	EndpointsMetrics() []string
-	Client(opts ...config.ClientOption) *EtcdctlV3
+	Etcdctl(opts ...config.ClientOption) *EtcdctlV3
 
 	IsRunning() bool
 	Wait(ctx context.Context) error
@@ -55,12 +55,13 @@ type EtcdProcess interface {
 	Config() *EtcdServerProcessConfig
 	PeerProxy() proxy.Server
 	Failpoints() *BinaryFailpoints
+	LazyFS() *LazyFS
 	Logs() LogsExpect
 	Kill() error
 }
 
 type LogsExpect interface {
-	ExpectWithContext(context.Context, string) (string, error)
+	ExpectWithContext(context.Context, expect.ExpectedResponse) (string, error)
 	Lines() []string
 	LineCount() int
 }
@@ -69,6 +70,7 @@ type EtcdServerProcess struct {
 	cfg        *EtcdServerProcessConfig
 	proc       *expect.ExpectProcess
 	proxy      proxy.Server
+	lazyfs     *LazyFS
 	failpoints *BinaryFailpoints
 	donec      chan struct{} // closed when Interact() terminates
 }
@@ -77,7 +79,7 @@ type EtcdServerProcessConfig struct {
 	lg       *zap.Logger
 	ExecPath string
 	Args     []string
-	TlsArgs  []string
+	TLSArgs  []string
 	EnvVars  map[string]string
 
 	Client      ClientConfig
@@ -86,18 +88,21 @@ type EtcdServerProcessConfig struct {
 
 	Name string
 
-	PeerURL    url.URL
-	ClientURL  string
-	MetricsURL string
+	PeerURL       url.URL
+	ClientURL     string
+	ClientHTTPURL string
+	MetricsURL    string
 
-	InitialToken   string
-	InitialCluster string
-	GoFailPort     int
+	InitialToken        string
+	InitialCluster      string
+	GoFailPort          int
+	GoFailClientTimeout time.Duration
 
-	Proxy *proxy.ServerConfig
+	LazyFSEnabled bool
+	Proxy         *proxy.ServerConfig
 }
 
-func NewEtcdServerProcess(cfg *EtcdServerProcessConfig) (*EtcdServerProcess, error) {
+func NewEtcdServerProcess(t testing.TB, cfg *EtcdServerProcessConfig) (*EtcdServerProcess, error) {
 	if !fileutil.Exist(cfg.ExecPath) {
 		return nil, fmt.Errorf("could not find etcd binary: %s", cfg.ExecPath)
 	}
@@ -105,20 +110,34 @@ func NewEtcdServerProcess(cfg *EtcdServerProcessConfig) (*EtcdServerProcess, err
 		if err := os.RemoveAll(cfg.DataDirPath); err != nil {
 			return nil, err
 		}
+		if err := os.Mkdir(cfg.DataDirPath, 0o700); err != nil {
+			return nil, err
+		}
 	}
 	ep := &EtcdServerProcess{cfg: cfg, donec: make(chan struct{})}
 	if cfg.GoFailPort != 0 {
-		ep.failpoints = &BinaryFailpoints{member: ep}
+		ep.failpoints = &BinaryFailpoints{
+			member:        ep,
+			clientTimeout: cfg.GoFailClientTimeout,
+		}
+	}
+	if cfg.LazyFSEnabled {
+		ep.lazyfs = newLazyFS(cfg.lg, cfg.DataDirPath, t)
 	}
 	return ep, nil
 }
 
-func (ep *EtcdServerProcess) EndpointsV2() []string      { return []string{ep.cfg.ClientURL} }
-func (ep *EtcdServerProcess) EndpointsV3() []string      { return ep.EndpointsV2() }
+func (ep *EtcdServerProcess) EndpointsGRPC() []string { return []string{ep.cfg.ClientURL} }
+func (ep *EtcdServerProcess) EndpointsHTTP() []string {
+	if ep.cfg.ClientHTTPURL == "" {
+		return []string{ep.cfg.ClientURL}
+	}
+	return []string{ep.cfg.ClientHTTPURL}
+}
 func (ep *EtcdServerProcess) EndpointsMetrics() []string { return []string{ep.cfg.MetricsURL} }
 
-func (epc *EtcdServerProcess) Client(opts ...config.ClientOption) *EtcdctlV3 {
-	etcdctl, err := NewEtcdctl(epc.Config().Client, epc.EndpointsV3(), opts...)
+func (ep *EtcdServerProcess) Etcdctl(opts ...config.ClientOption) *EtcdctlV3 {
+	etcdctl, err := NewEtcdctl(ep.Config().Client, ep.EndpointsGRPC(), opts...)
 	if err != nil {
 		panic(err)
 	}
@@ -139,6 +158,14 @@ func (ep *EtcdServerProcess) Start(ctx context.Context) error {
 			return err
 		}
 	}
+	if ep.lazyfs != nil {
+		ep.cfg.lg.Info("starting lazyfs...", zap.String("name", ep.cfg.Name))
+		err := ep.lazyfs.Start(ctx)
+		if err != nil {
+			return err
+		}
+	}
+
 	ep.cfg.lg.Info("starting server...", zap.String("name", ep.cfg.Name))
 	proc, err := SpawnCmdWithLogger(ep.cfg.lg, append([]string{ep.cfg.ExecPath}, ep.cfg.Args...), ep.cfg.EnvVars, ep.cfg.Name)
 	if err != nil {
@@ -165,10 +192,12 @@ func (ep *EtcdServerProcess) Restart(ctx context.Context) error {
 }
 
 func (ep *EtcdServerProcess) Stop() (err error) {
-	ep.cfg.lg.Info("stopping server...", zap.String("name", ep.cfg.Name))
 	if ep == nil || ep.proc == nil {
 		return nil
 	}
+
+	ep.cfg.lg.Info("stopping server...", zap.String("name", ep.cfg.Name))
+
 	defer func() {
 		ep.proc = nil
 	}()
@@ -192,8 +221,16 @@ func (ep *EtcdServerProcess) Stop() (err error) {
 	ep.cfg.lg.Info("stopped server.", zap.String("name", ep.cfg.Name))
 	if ep.proxy != nil {
 		ep.cfg.lg.Info("stopping proxy...", zap.String("name", ep.cfg.Name))
-		err := ep.proxy.Close()
+		err = ep.proxy.Close()
 		ep.proxy = nil
+		if err != nil {
+			return err
+		}
+	}
+	if ep.lazyfs != nil {
+		ep.cfg.lg.Info("stopping lazyfs...", zap.String("name", ep.cfg.Name))
+		err = ep.lazyfs.Stop()
+		ep.lazyfs = nil
 		if err != nil {
 			return err
 		}
@@ -216,7 +253,11 @@ func (ep *EtcdServerProcess) Close() error {
 
 func (ep *EtcdServerProcess) waitReady(ctx context.Context) error {
 	defer close(ep.donec)
-	return WaitReadyExpectProc(ctx, ep.proc, EtcdServerReadyLines)
+	err := WaitReadyExpectProc(ctx, ep.proc, EtcdServerReadyLines)
+	if err != nil {
+		return fmt.Errorf("failed to find etcd ready lines %q, err: %w", EtcdServerReadyLines, err)
+	}
+	return nil
 }
 
 func (ep *EtcdServerProcess) Config() *EtcdServerProcessConfig { return ep.cfg }
@@ -239,7 +280,14 @@ func (ep *EtcdServerProcess) Wait(ctx context.Context) error {
 		defer close(ch)
 		if ep.proc != nil {
 			ep.proc.Wait()
-			ep.cfg.lg.Info("server exited", zap.String("name", ep.cfg.Name))
+
+			exitCode, exitErr := ep.proc.ExitCode()
+
+			ep.cfg.lg.Info("server exited",
+				zap.String("name", ep.cfg.Name),
+				zap.Int("code", exitCode),
+				zap.Error(exitErr),
+			)
 		}
 	}()
 	select {
@@ -255,11 +303,16 @@ func (ep *EtcdServerProcess) IsRunning() bool {
 	if ep.proc == nil {
 		return false
 	}
-	_, err := ep.proc.ExitCode()
-	if err == expect.ErrProcessRunning {
+
+	exitCode, err := ep.proc.ExitCode()
+	if errors.Is(err, expect.ErrProcessRunning) {
 		return true
 	}
-	ep.cfg.lg.Info("server exited", zap.String("name", ep.cfg.Name))
+
+	ep.cfg.lg.Info("server exited",
+		zap.String("name", ep.cfg.Name),
+		zap.Int("code", exitCode),
+		zap.Error(err))
 	ep.proc = nil
 	return false
 }
@@ -269,7 +322,7 @@ func AssertProcessLogs(t *testing.T, ep EtcdProcess, expectLog string) {
 	var err error
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	_, err = ep.Logs().ExpectWithContext(ctx, expectLog)
+	_, err = ep.Logs().ExpectWithContext(ctx, expect.ExpectedResponse{Value: expectLog})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,25 +332,44 @@ func (ep *EtcdServerProcess) PeerProxy() proxy.Server {
 	return ep.proxy
 }
 
+func (ep *EtcdServerProcess) LazyFS() *LazyFS {
+	return ep.lazyfs
+}
+
 func (ep *EtcdServerProcess) Failpoints() *BinaryFailpoints {
 	return ep.failpoints
 }
 
 type BinaryFailpoints struct {
 	member         EtcdProcess
-	availableCache map[string]struct{}
+	availableCache map[string]string
+	clientTimeout  time.Duration
 }
 
-func (f *BinaryFailpoints) Setup(ctx context.Context, failpoint, payload string) error {
+func (f *BinaryFailpoints) SetupEnv(failpoint, payload string) error {
+	if f.member.IsRunning() {
+		return errors.New("cannot setup environment variable while process is running")
+	}
+	f.member.Config().EnvVars["GOFAIL_FAILPOINTS"] = fmt.Sprintf("%s=%s", failpoint, payload)
+	return nil
+}
+
+func (f *BinaryFailpoints) SetupHTTP(ctx context.Context, failpoint, payload string) error {
 	host := fmt.Sprintf("127.0.0.1:%d", f.member.Config().GoFailPort)
-	failpointUrl := url.URL{
+	failpointURL := url.URL{
 		Scheme: "http",
 		Host:   host,
 		Path:   failpoint,
 	}
-	r, err := http.NewRequestWithContext(ctx, "PUT", failpointUrl.String(), bytes.NewBuffer([]byte(payload)))
+	r, err := http.NewRequestWithContext(ctx, http.MethodPut, failpointURL.String(), bytes.NewBuffer([]byte(payload)))
 	if err != nil {
 		return err
+	}
+	httpClient := http.Client{
+		Timeout: 1 * time.Second,
+	}
+	if f.clientTimeout != 0 {
+		httpClient.Timeout = f.clientTimeout
 	}
 	resp, err := httpClient.Do(r)
 	if err != nil {
@@ -305,45 +377,157 @@ func (f *BinaryFailpoints) Setup(ctx context.Context, failpoint, payload string)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("bad status code: %d", resp.StatusCode)
+		errMsg, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return fmt.Errorf("bad status code: %d, err: %w", resp.StatusCode, err)
+		}
+		return fmt.Errorf("bad status code: %d, err: %s", resp.StatusCode, errMsg)
 	}
 	return nil
 }
 
-var httpClient = http.Client{
-	Timeout: 10 * time.Millisecond,
+func (f *BinaryFailpoints) DeactivateHTTP(ctx context.Context, failpoint string) error {
+	host := fmt.Sprintf("127.0.0.1:%d", f.member.Config().GoFailPort)
+	failpointURL := url.URL{
+		Scheme: "http",
+		Host:   host,
+		Path:   failpoint,
+	}
+	r, err := http.NewRequestWithContext(ctx, http.MethodDelete, failpointURL.String(), nil)
+	if err != nil {
+		return err
+	}
+	httpClient := http.Client{
+		Timeout: time.Second,
+	}
+	if f.clientTimeout != 0 {
+		httpClient.Timeout = f.clientTimeout
+	}
+	resp, err := httpClient.Do(r)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		errMsg, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return fmt.Errorf("bad status code: %d, err: %w", resp.StatusCode, err)
+		}
+		return fmt.Errorf("bad status code: %d, err: %s", resp.StatusCode, errMsg)
+	}
+	return nil
 }
 
-func (f *BinaryFailpoints) Available() map[string]struct{} {
+func (f *BinaryFailpoints) Enabled() bool {
+	_, err := failpoints(f.member)
+	return err == nil
+}
+
+func (f *BinaryFailpoints) Available(failpoint string) bool {
 	if f.availableCache == nil {
-		fs, err := fetchFailpoints(f.member)
+		fs, err := failpoints(f.member)
 		if err != nil {
 			panic(err)
 		}
 		f.availableCache = fs
 	}
-	return f.availableCache
+	_, found := f.availableCache[failpoint]
+	return found
 }
 
-func fetchFailpoints(member EtcdProcess) (map[string]struct{}, error) {
+func failpoints(member EtcdProcess) (map[string]string, error) {
+	body, err := fetchFailpointsBody(member)
+	if err != nil {
+		return nil, err
+	}
+	defer body.Close()
+	return parseFailpointsBody(body)
+}
+
+func fetchFailpointsBody(member EtcdProcess) (io.ReadCloser, error) {
 	address := fmt.Sprintf("127.0.0.1:%d", member.Config().GoFailPort)
-	failpointUrl := url.URL{
+	failpointURL := url.URL{
 		Scheme: "http",
 		Host:   address,
 	}
-	resp, err := http.Get(failpointUrl.String())
+	resp, err := http.Get(failpointURL.String())
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		defer resp.Body.Close()
+		errMsg, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("invalid status code: %d, err: %w", resp.StatusCode, err)
+		}
+		return nil, fmt.Errorf("invalid status code: %d, err:%s", resp.StatusCode, errMsg)
+	}
+	return resp.Body, nil
+}
+
+func parseFailpointsBody(body io.Reader) (map[string]string, error) {
+	data, err := io.ReadAll(body)
 	if err != nil {
 		return nil, err
 	}
-	text := strings.ReplaceAll(string(body), "=", "")
-	failpoints := map[string]struct{}{}
-	for _, f := range strings.Split(text, "\n") {
-		failpoints[f] = struct{}{}
+	lines := strings.Split(string(data), "\n")
+	failpoints := map[string]string{}
+	for _, line := range lines {
+		// Format:
+		// failpoint=value
+		parts := strings.SplitN(line, "=", 2)
+		failpoint := parts[0]
+		var value string
+		if len(parts) == 2 {
+			value = parts[1]
+		}
+		failpoints[failpoint] = value
 	}
 	return failpoints, nil
+}
+
+var GetVersionFromBinary = func(binaryPath string) (*semver.Version, error) {
+	if !fileutil.Exist(binaryPath) {
+		return nil, fmt.Errorf("binary path does not exist: %s", binaryPath)
+	}
+	lines, err := RunUtilCompletion([]string{binaryPath, "--version"}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("could not find binary version from %s, err: %w", binaryPath, err)
+	}
+
+	for _, line := range lines {
+		if strings.HasPrefix(line, "etcd Version:") {
+			versionString := strings.TrimSpace(strings.SplitAfter(line, ":")[1])
+			version, err := semver.NewVersion(versionString)
+			if err != nil {
+				return nil, err
+			}
+			return &semver.Version{
+				Major: version.Major,
+				Minor: version.Minor,
+				Patch: version.Patch,
+			}, nil
+		}
+	}
+
+	return nil, fmt.Errorf("could not find version in binary output of %s, lines outputted were %v", binaryPath, lines)
+}
+
+// setGetVersionFromBinary changes the GetVersionFromBinary function to a mock in testing.
+func setGetVersionFromBinary(tb testing.TB, f func(binaryPath string) (*semver.Version, error)) {
+	origGetVersionFromBinary := GetVersionFromBinary
+	GetVersionFromBinary = f
+	tb.Cleanup(func() {
+		GetVersionFromBinary = origGetVersionFromBinary
+	})
+}
+
+func CouldSetSnapshotCatchupEntries(execPath string) bool {
+	v, err := GetVersionFromBinary(execPath)
+	if err != nil {
+		return false
+	}
+	// snapshot-catchup-entries flag was backported in https://github.com/etcd-io/etcd/pull/17808
+	v3_5_14 := semver.Version{Major: 3, Minor: 5, Patch: 14}
+	return v.Compare(v3_5_14) >= 0
 }

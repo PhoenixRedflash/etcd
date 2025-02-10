@@ -15,12 +15,14 @@
 package schema
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 	"time"
 
 	"github.com/coreos/go-semver/semver"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/zap/zaptest"
 
 	"go.etcd.io/etcd/api/v3/version"
@@ -167,9 +169,7 @@ func TestMigrationStepExecute(t *testing.T) {
 			be, _ := betesting.NewTmpBackend(t, time.Microsecond, 10)
 			defer be.Close()
 			tx := be.BatchTx()
-			if tx == nil {
-				t.Fatal("batch tx is nil")
-			}
+			require.NotNilf(t, tx, "batch tx is nil")
 			tx.Lock()
 			defer tx.Unlock()
 
@@ -178,7 +178,7 @@ func TestMigrationStepExecute(t *testing.T) {
 
 			step := newMigrationStep(tc.currentVersion, tc.isUpgrade, tc.changes)
 			err := step.unsafeExecute(lg, tx)
-			if err != tc.expectError {
+			if !errors.Is(err, tc.expectError) {
 				t.Errorf("Unexpected error or lack thereof, expected: %v, got: %v", tc.expectError, err)
 			}
 			v := UnsafeReadStorageVersion(tx)
@@ -221,7 +221,7 @@ type actionMock struct {
 	err      error
 }
 
-func (a actionMock) unsafeDo(tx backend.BatchTx) (action, error) {
+func (a actionMock) unsafeDo(tx backend.UnsafeReadWriter) (action, error) {
 	a.recorder.actions = append(a.recorder.actions, a.name)
 	return actionMock{
 		recorder: a.recorder,

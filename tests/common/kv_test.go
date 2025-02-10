@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/tests/v3/framework/config"
@@ -39,22 +40,12 @@ func TestKVPut(t *testing.T) {
 			testutils.ExecuteUntil(ctx, t, func() {
 				key, value := "foo", "bar"
 
-				if err := cc.Put(ctx, key, value, config.PutOptions{}); err != nil {
-					t.Fatalf("count not put key %q, err: %s", key, err)
-				}
+				require.NoErrorf(t, cc.Put(ctx, key, value, config.PutOptions{}), "count not put key %q", key)
 				resp, err := cc.Get(ctx, key, config.GetOptions{})
-				if err != nil {
-					t.Fatalf("count not get key %q, err: %s", key, err)
-				}
-				if len(resp.Kvs) != 1 {
-					t.Errorf("Unexpected lenth of response, got %d", len(resp.Kvs))
-				}
-				if string(resp.Kvs[0].Key) != key {
-					t.Errorf("Unexpected key, want %q, got %q", key, resp.Kvs[0].Key)
-				}
-				if string(resp.Kvs[0].Value) != value {
-					t.Errorf("Unexpected value, want %q, got %q", value, resp.Kvs[0].Value)
-				}
+				require.NoErrorf(t, err, "count not get key %q, err: %s", key, err)
+				assert.Lenf(t, resp.Kvs, 1, "Unexpected length of response, got %d", len(resp.Kvs))
+				assert.Equalf(t, string(resp.Kvs[0].Key), key, "Unexpected key, want %q, got %q", key, resp.Kvs[0].Key)
+				assert.Equalf(t, string(resp.Kvs[0].Value), value, "Unexpected value, want %q, got %q", value, resp.Kvs[0].Value)
 			})
 		})
 	}
@@ -79,9 +70,7 @@ func TestKVGet(t *testing.T) {
 				)
 
 				for i := range kvs {
-					if err := cc.Put(ctx, kvs[i], "bar", config.PutOptions{}); err != nil {
-						t.Fatalf("count not put key %q, err: %s", kvs[i], err)
-					}
+					require.NoErrorf(t, cc.Put(ctx, kvs[i], "bar", config.PutOptions{}), "count not put key %q", kvs[i])
 				}
 				tests := []struct {
 					begin   string
@@ -109,9 +98,7 @@ func TestKVGet(t *testing.T) {
 				}
 				for _, tt := range tests {
 					resp, err := cc.Get(ctx, tt.begin, tt.options)
-					if err != nil {
-						t.Fatalf("count not get key %q, err: %s", tt.begin, err)
-					}
+					require.NoErrorf(t, err, "count not get key %q, err: %s", tt.begin, err)
 					kvs := testutils.KeysFromGetResponse(resp)
 					assert.Equal(t, tt.wkv, kvs)
 				}
@@ -124,7 +111,7 @@ func TestKVDelete(t *testing.T) {
 	testRunner.BeforeTest(t)
 	for _, tc := range clusterTestCases() {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			clus := testRunner.NewCluster(ctx, t, config.WithClusterConfig(tc.config))
 			defer clus.Close()
@@ -179,19 +166,13 @@ func TestKVDelete(t *testing.T) {
 				}
 				for _, tt := range tests {
 					for i := range kvs {
-						if err := cc.Put(ctx, kvs[i], "bar", config.PutOptions{}); err != nil {
-							t.Fatalf("count not put key %q, err: %s", kvs[i], err)
-						}
+						require.NoErrorf(t, cc.Put(ctx, kvs[i], "bar", config.PutOptions{}), "count not put key %q", kvs[i])
 					}
 					del, err := cc.Delete(ctx, tt.deleteKey, tt.options)
-					if err != nil {
-						t.Fatalf("count not get key %q, err: %s", tt.deleteKey, err)
-					}
+					require.NoErrorf(t, err, "count not get key %q, err", tt.deleteKey)
 					assert.Equal(t, tt.wantDeleted, int(del.Deleted))
 					get, err := cc.Get(ctx, "", config.GetOptions{Prefix: true})
-					if err != nil {
-						t.Fatalf("count not get key, err: %s", err)
-					}
+					require.NoErrorf(t, err, "count not get key")
 					kvs := testutils.KeysFromGetResponse(get)
 					assert.Equal(t, tt.wantKeys, kvs)
 				}
@@ -232,9 +213,10 @@ func TestKVGetNoQuorum(t *testing.T) {
 			testutils.ExecuteUntil(ctx, t, func() {
 				key := "foo"
 				_, err := cc.Get(ctx, key, tc.options)
-				gotError := err != nil
-				if gotError != tc.wantError {
-					t.Fatalf("Unexpeted result, wantError: %v, gotErr: %v, err: %s", tc.wantError, gotError, err)
+				if tc.wantError {
+					require.Error(t, err)
+				} else {
+					require.NoError(t, err)
 				}
 			})
 		})

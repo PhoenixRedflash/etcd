@@ -1,3 +1,4 @@
+---
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -6,57 +7,32 @@ updates:
       interval: weekly
 
   - package-ecosystem: gomod
-    directory: /api
+    directory: /
     schedule:
       interval: weekly
+    allow:
+      - dependency-type: all
 
   - package-ecosystem: gomod
-    directory: /client/pkg
+    directory: /tools/mod # Not linked from /go.mod
     schedule:
       interval: weekly
+    allow:
+      - dependency-type: direct
 
-  - package-ecosystem: gomod
-    directory: /client/v2
-    schedule:
-      interval: weekly
-
-  - package-ecosystem: gomod
-    directory: /client/v3
-    schedule:
-      interval: weekly
-
-  - package-ecosystem: gomod
-    directory: /etcdctl
-    schedule:
-      interval: weekly
-
-  - package-ecosystem: gomod
-    directory: /etcdutl
-    schedule:
-      interval: weekly
-
-  - package-ecosystem: gomod
+  - package-ecosystem: docker
     directory: /
     schedule:
       interval: weekly
 
-  - package-ecosystem: gomod
-    directory: /pkg
+  - package-ecosystem: docker
+    directory: /
+    target-branch: "release-3.4"
     schedule:
-      interval: weekly
+      interval: monthly
 
-  - package-ecosystem: gomod
-    directory: /server
+  - package-ecosystem: docker
+    directory: /
+    target-branch: "release-3.5"
     schedule:
-      interval: weekly
-
-  - package-ecosystem: gomod
-    directory: /tests
-    schedule:
-      interval: weekly
-
-  - package-ecosystem: gomod
-    directory: /tools/mod
-    schedule:
-      interval: weekly
-
+      interval: monthly

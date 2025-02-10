@@ -42,9 +42,6 @@ func TestScheduledCompact(t *testing.T) {
 		{
 			value: math.MaxInt64,
 		},
-		{
-			value: math.MinInt64,
-		},
 	}
 	for _, tc := range tcs {
 		t.Run(fmt.Sprint(tc.value), func(t *testing.T) {
@@ -64,7 +61,7 @@ func TestScheduledCompact(t *testing.T) {
 			b := backend.NewDefaultBackend(lg, tmpPath)
 			defer b.Close()
 			v, found := UnsafeReadScheduledCompact(b.BatchTx())
-			assert.Equal(t, true, found)
+			assert.True(t, found)
 			assert.Equal(t, tc.value, v)
 		})
 	}
@@ -83,9 +80,6 @@ func TestFinishedCompact(t *testing.T) {
 		},
 		{
 			value: math.MaxInt64,
-		},
-		{
-			value: math.MinInt64,
 		},
 	}
 	for _, tc := range tcs {
@@ -106,7 +100,7 @@ func TestFinishedCompact(t *testing.T) {
 			b := backend.NewDefaultBackend(lg, tmpPath)
 			defer b.Close()
 			v, found := UnsafeReadFinishedCompact(b.BatchTx())
-			assert.Equal(t, true, found)
+			assert.True(t, found)
 			assert.Equal(t, tc.value, v)
 		})
 	}

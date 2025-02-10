@@ -90,6 +90,15 @@ type Config struct {
 	// PermitWithoutStream when set will allow client to send keepalive pings to server without any active streams(RPCs).
 	PermitWithoutStream bool `json:"permit-without-stream"`
 
+	// MaxUnaryRetries is the maximum number of retries for unary RPCs.
+	MaxUnaryRetries uint `json:"max-unary-retries"`
+
+	// BackoffWaitBetween is the wait time before retrying an RPC.
+	BackoffWaitBetween time.Duration `json:"backoff-wait-between"`
+
+	// BackoffJitterFraction is the jitter fraction to randomize backoff wait time.
+	BackoffJitterFraction float64 `json:"backoff-jitter-fraction"`
+
 	// TODO: support custom balancer picker
 }
 
@@ -97,13 +106,15 @@ type Config struct {
 // environment variables or config file. It is a fully declarative configuration,
 // and can be serialized & deserialized to/from JSON.
 type ConfigSpec struct {
-	Endpoints        []string      `json:"endpoints"`
-	RequestTimeout   time.Duration `json:"request-timeout"`
-	DialTimeout      time.Duration `json:"dial-timeout"`
-	KeepAliveTime    time.Duration `json:"keepalive-time"`
-	KeepAliveTimeout time.Duration `json:"keepalive-timeout"`
-	Secure           *SecureConfig `json:"secure"`
-	Auth             *AuthConfig   `json:"auth"`
+	Endpoints          []string      `json:"endpoints"`
+	RequestTimeout     time.Duration `json:"request-timeout"`
+	DialTimeout        time.Duration `json:"dial-timeout"`
+	KeepAliveTime      time.Duration `json:"keepalive-time"`
+	KeepAliveTimeout   time.Duration `json:"keepalive-timeout"`
+	MaxCallSendMsgSize int           `json:"max-request-bytes"`
+	MaxCallRecvMsgSize int           `json:"max-recv-bytes"`
+	Secure             *SecureConfig `json:"secure"`
+	Auth               *AuthConfig   `json:"auth"`
 }
 
 type SecureConfig struct {
@@ -119,6 +130,30 @@ type SecureConfig struct {
 type AuthConfig struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
+}
+
+func (cs *ConfigSpec) Clone() *ConfigSpec {
+	if cs == nil {
+		return nil
+	}
+
+	clone := *cs
+
+	if len(cs.Endpoints) > 0 {
+		clone.Endpoints = make([]string, len(cs.Endpoints))
+		copy(clone.Endpoints, cs.Endpoints)
+	}
+
+	if cs.Secure != nil {
+		clone.Secure = &SecureConfig{}
+		*clone.Secure = *cs.Secure
+	}
+	if cs.Auth != nil {
+		clone.Auth = &AuthConfig{}
+		*clone.Auth = *cs.Auth
+	}
+
+	return &clone
 }
 
 func (cfg AuthConfig) Empty() bool {
@@ -137,6 +172,8 @@ func NewClientConfig(confSpec *ConfigSpec, lg *zap.Logger) (*Config, error) {
 		DialTimeout:          confSpec.DialTimeout,
 		DialKeepAliveTime:    confSpec.KeepAliveTime,
 		DialKeepAliveTimeout: confSpec.KeepAliveTimeout,
+		MaxCallSendMsgSize:   confSpec.MaxCallSendMsgSize,
+		MaxCallRecvMsgSize:   confSpec.MaxCallRecvMsgSize,
 		TLS:                  tlsCfg,
 	}
 

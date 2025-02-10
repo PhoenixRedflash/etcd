@@ -15,11 +15,11 @@
 package command
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
@@ -48,7 +48,7 @@ func (p *jsonPrinter) MemberList(r clientv3.MemberListResponse) {
 	}
 }
 
-func printJSON(v interface{}) {
+func printJSON(v any) {
 	b, err := json.Marshal(v)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
@@ -58,7 +58,7 @@ func printJSON(v interface{}) {
 }
 
 func printMemberListWithHexJSON(r clientv3.MemberListResponse) {
-	var buffer bytes.Buffer
+	var buffer strings.Builder
 	var b []byte
 	buffer.WriteString("{\"header\":{\"cluster_id\":\"")
 	b = strconv.AppendUint(nil, r.Header.ClusterId, 16)
@@ -97,5 +97,4 @@ func printMemberListWithHexJSON(r clientv3.MemberListResponse) {
 	}
 	buffer.WriteString("}")
 	fmt.Println(buffer.String())
-
 }

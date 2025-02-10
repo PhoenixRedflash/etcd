@@ -19,8 +19,13 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/binary"
+	errorspkg "errors"
 	"strconv"
 	"time"
+
+	"github.com/gogo/protobuf/proto"
+	"go.uber.org/zap"
+	"golang.org/x/crypto/bcrypt"
 
 	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/version"
@@ -30,14 +35,11 @@ import (
 	apply2 "go.etcd.io/etcd/server/v3/etcdserver/apply"
 	"go.etcd.io/etcd/server/v3/etcdserver/errors"
 	"go.etcd.io/etcd/server/v3/etcdserver/txn"
+	"go.etcd.io/etcd/server/v3/features"
 	"go.etcd.io/etcd/server/v3/lease"
 	"go.etcd.io/etcd/server/v3/lease/leasehttp"
 	"go.etcd.io/etcd/server/v3/storage/mvcc"
 	"go.etcd.io/raft/v3"
-
-	"github.com/gogo/protobuf/proto"
-	"go.uber.org/zap"
-	"golang.org/x/crypto/bcrypt"
 )
 
 const (
@@ -105,7 +107,7 @@ func (s *EtcdServer) Range(ctx context.Context, r *pb.RangeRequest) (*pb.RangeRe
 		traceutil.Field{Key: "range_begin", Value: string(r.Key)},
 		traceutil.Field{Key: "range_end", Value: string(r.RangeEnd)},
 	)
-	ctx = context.WithValue(ctx, traceutil.TraceKey, trace)
+	ctx = context.WithValue(ctx, traceutil.TraceKey{}, trace)
 
 	var resp *pb.RangeResponse
 	var err error
@@ -131,7 +133,7 @@ func (s *EtcdServer) Range(ctx context.Context, r *pb.RangeRequest) (*pb.RangeRe
 		return s.authStore.IsRangePermitted(ai, r.Key, r.RangeEnd)
 	}
 
-	get := func() { resp, err = txn.Range(ctx, s.Logger(), s.KV(), nil, r) }
+	get := func() { resp, _, err = txn.Range(ctx, s.Logger(), s.KV(), r) }
 	if serr := s.doSerialize(ctx, chk, get); serr != nil {
 		err = serr
 		return nil, err
@@ -140,7 +142,7 @@ func (s *EtcdServer) Range(ctx context.Context, r *pb.RangeRequest) (*pb.RangeRe
 }
 
 func (s *EtcdServer) Put(ctx context.Context, r *pb.PutRequest) (*pb.PutResponse, error) {
-	ctx = context.WithValue(ctx, traceutil.StartTimeKey, time.Now())
+	ctx = context.WithValue(ctx, traceutil.StartTimeKey{}, time.Now())
 	resp, err := s.raftRequest(ctx, pb.InternalRaftRequest{Put: r})
 	if err != nil {
 		return nil, err
@@ -162,7 +164,7 @@ func (s *EtcdServer) Txn(ctx context.Context, r *pb.TxnRequest) (*pb.TxnResponse
 			s.Logger(),
 			traceutil.Field{Key: "read_only", Value: true},
 		)
-		ctx = context.WithValue(ctx, traceutil.TraceKey, trace)
+		ctx = context.WithValue(ctx, traceutil.TraceKey{}, trace)
 		if !txn.IsTxnSerializable(r) {
 			err := s.linearizableReadNotify(ctx)
 			trace.Step("agreement among raft nodes before linearized reading")
@@ -182,7 +184,7 @@ func (s *EtcdServer) Txn(ctx context.Context, r *pb.TxnRequest) (*pb.TxnResponse
 		}(time.Now())
 
 		get := func() {
-			resp, _, err = txn.Txn(ctx, s.Logger(), r, s.Cfg.ExperimentalTxnModeWriteWithSharedBuffer, s.KV(), s.lessor)
+			resp, _, err = txn.Txn(ctx, s.Logger(), r, s.Cfg.ServerFeatureGate.Enabled(features.TxnModeWriteWithSharedBuffer), s.KV(), s.lessor)
 		}
 		if serr := s.doSerialize(ctx, chk, get); serr != nil {
 			return nil, serr
@@ -190,7 +192,7 @@ func (s *EtcdServer) Txn(ctx context.Context, r *pb.TxnRequest) (*pb.TxnResponse
 		return resp, err
 	}
 
-	ctx = context.WithValue(ctx, traceutil.StartTimeKey, time.Now())
+	ctx = context.WithValue(ctx, traceutil.StartTimeKey{}, time.Now())
 	resp, err := s.raftRequest(ctx, pb.InternalRaftRequest{Txn: r})
 	if err != nil {
 		return nil, err
@@ -278,6 +280,16 @@ func (s *EtcdServer) LeaseRevoke(ctx context.Context, r *pb.LeaseRevokeRequest) 
 
 func (s *EtcdServer) LeaseRenew(ctx context.Context, id lease.LeaseID) (int64, error) {
 	if s.isLeader() {
+		// If s.isLeader() returns true, but we fail to ensure the current
+		// member's leadership, there are a couple of possibilities:
+		//   1. current member gets stuck on writing WAL entries;
+		//   2. current member is in network isolation status;
+		//   3. current member isn't a leader anymore (possibly due to #1 above).
+		// In such case, we just return error to client, so that the client can
+		// switch to another member to continue the lease keep-alive operation.
+		if !s.ensureLeadership() {
+			return -1, lease.ErrNotPrimary
+		}
 		if err := s.waitAppliedIndex(); err != nil {
 			return 0, err
 		}
@@ -286,7 +298,7 @@ func (s *EtcdServer) LeaseRenew(ctx context.Context, id lease.LeaseID) (int64, e
 		if err == nil { // already requested to primary lessor(leader)
 			return ttl, nil
 		}
-		if err != lease.ErrNotPrimary {
+		if !errorspkg.Is(err, lease.ErrNotPrimary) {
 			return -1, err
 		}
 	}
@@ -303,7 +315,7 @@ func (s *EtcdServer) LeaseRenew(ctx context.Context, id lease.LeaseID) (int64, e
 		for _, url := range leader.PeerURLs {
 			lurl := url + leasehttp.LeasePrefix
 			ttl, err := leasehttp.RenewHTTP(cctx, id, lurl, s.peerRt)
-			if err == nil || err == lease.ErrLeaseNotFound {
+			if err == nil || errorspkg.Is(err, lease.ErrLeaseNotFound) {
 				return ttl, err
 			}
 		}
@@ -311,17 +323,45 @@ func (s *EtcdServer) LeaseRenew(ctx context.Context, id lease.LeaseID) (int64, e
 		time.Sleep(50 * time.Millisecond)
 	}
 
-	if cctx.Err() == context.DeadlineExceeded {
+	if errorspkg.Is(cctx.Err(), context.DeadlineExceeded) {
 		return -1, errors.ErrTimeout
 	}
 	return -1, errors.ErrCanceled
 }
 
-func (s *EtcdServer) LeaseTimeToLive(ctx context.Context, r *pb.LeaseTimeToLiveRequest) (*pb.LeaseTimeToLiveResponse, error) {
+func (s *EtcdServer) checkLeaseTimeToLive(ctx context.Context, leaseID lease.LeaseID) (uint64, error) {
+	rev := s.AuthStore().Revision()
+	if !s.AuthStore().IsAuthEnabled() {
+		return rev, nil
+	}
+	authInfo, err := s.AuthInfoFromCtx(ctx)
+	if err != nil {
+		return rev, err
+	}
+	if authInfo == nil {
+		return rev, auth.ErrUserEmpty
+	}
+
+	l := s.lessor.Lookup(leaseID)
+	if l != nil {
+		for _, key := range l.Keys() {
+			if err := s.AuthStore().IsRangePermitted(authInfo, []byte(key), []byte{}); err != nil {
+				return 0, err
+			}
+		}
+	}
+
+	return rev, nil
+}
+
+func (s *EtcdServer) leaseTimeToLive(ctx context.Context, r *pb.LeaseTimeToLiveRequest) (*pb.LeaseTimeToLiveResponse, error) {
 	if s.isLeader() {
 		if err := s.waitAppliedIndex(); err != nil {
 			return nil, err
 		}
+
+		// gofail: var beforeLookupWhenLeaseTimeToLive struct{}
+
 		// primary; timetolive directly from leader
 		le := s.lessor.Lookup(lease.LeaseID(r.ID))
 		if le == nil {
@@ -336,6 +376,15 @@ func (s *EtcdServer) LeaseTimeToLive(ctx context.Context, r *pb.LeaseTimeToLiveR
 				kbs[i] = []byte(ks[i])
 			}
 			resp.Keys = kbs
+		}
+
+		// The leasor could be demoted if leader changed during lookup.
+		// We should return error to force retry instead of returning
+		// incorrect remaining TTL.
+		if le.Demoted() {
+			// NOTE: lease.ErrNotPrimary is not retryable error for
+			// client. Instead, uses ErrLeaderChanged.
+			return nil, errors.ErrLeaderChanged
 		}
 		return resp, nil
 	}
@@ -355,22 +404,46 @@ func (s *EtcdServer) LeaseTimeToLive(ctx context.Context, r *pb.LeaseTimeToLiveR
 			if err == nil {
 				return resp.LeaseTimeToLiveResponse, nil
 			}
-			if err == lease.ErrLeaseNotFound {
+			if errorspkg.Is(err, lease.ErrLeaseNotFound) {
 				return nil, err
 			}
 		}
 	}
 
-	if cctx.Err() == context.DeadlineExceeded {
+	if errorspkg.Is(cctx.Err(), context.DeadlineExceeded) {
 		return nil, errors.ErrTimeout
 	}
 	return nil, errors.ErrCanceled
 }
 
+func (s *EtcdServer) LeaseTimeToLive(ctx context.Context, r *pb.LeaseTimeToLiveRequest) (*pb.LeaseTimeToLiveResponse, error) {
+	var rev uint64
+	var err error
+	if r.Keys {
+		// check RBAC permission only if Keys is true
+		rev, err = s.checkLeaseTimeToLive(ctx, lease.LeaseID(r.ID))
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	resp, err := s.leaseTimeToLive(ctx, r)
+	if err != nil {
+		return nil, err
+	}
+
+	if r.Keys {
+		if s.AuthStore().IsAuthEnabled() && rev != s.AuthStore().Revision() {
+			return nil, auth.ErrAuthOldRevision
+		}
+	}
+	return resp, nil
+}
+
 func (s *EtcdServer) newHeader() *pb.ResponseHeader {
 	return &pb.ResponseHeader{
 		ClusterId: uint64(s.cluster.ID()),
-		MemberId:  uint64(s.MemberId()),
+		MemberId:  uint64(s.MemberID()),
 		Revision:  s.KV().Rev(),
 		RaftTerm:  s.Term(),
 	}
@@ -445,11 +518,18 @@ func (s *EtcdServer) Authenticate(ctx context.Context, r *pb.AuthenticateRequest
 
 	lg := s.Logger()
 
+	// fix https://nvd.nist.gov/vuln/detail/CVE-2021-28235
+	defer func() {
+		if r != nil {
+			r.Password = ""
+		}
+	}()
+
 	var resp proto.Message
 	for {
 		checkedRevision, err := s.AuthStore().CheckPassword(r.Name, r.Password)
 		if err != nil {
-			if err != auth.ErrAuthNotEnabled {
+			if !errorspkg.Is(err, auth.ErrAuthNotEnabled) {
 				lg.Warn(
 					"invalid authentication was requested",
 					zap.String("user", r.Name),
@@ -615,7 +695,7 @@ func (s *EtcdServer) raftRequestOnce(ctx context.Context, r pb.InternalRaftReque
 	if result.Err != nil {
 		return nil, result.Err
 	}
-	if startTime, ok := ctx.Value(traceutil.StartTimeKey).(time.Time); ok && result.Trace != nil {
+	if startTime, ok := ctx.Value(traceutil.StartTimeKey{}).(time.Time); ok && result.Trace != nil {
 		applyStart := result.Trace.GetStartTime()
 		// The trace object is created in toApply. Here reset the start time to trace
 		// the raft request time by the difference between the request start time
@@ -724,7 +804,7 @@ func (s *EtcdServer) Watchable() mvcc.WatchableKV { return s.KV() }
 
 func (s *EtcdServer) linearizableReadLoop() {
 	for {
-		requestId := s.reqIDGen.Next()
+		requestID := s.reqIDGen.Next()
 		leaderChangedNotifier := s.leaderChanged.Receive()
 		select {
 		case <-leaderChangedNotifier:
@@ -744,7 +824,7 @@ func (s *EtcdServer) linearizableReadLoop() {
 		s.readNotifier = nextnr
 		s.readMu.Unlock()
 
-		confirmedIndex, err := s.requestCurrentIndex(leaderChangedNotifier, requestId)
+		confirmedIndex, err := s.requestCurrentIndex(leaderChangedNotifier, requestID)
 		if isStopped(err) {
 			return
 		}
@@ -776,11 +856,11 @@ func (s *EtcdServer) linearizableReadLoop() {
 }
 
 func isStopped(err error) bool {
-	return err == raft.ErrStopped || err == errors.ErrStopped
+	return errorspkg.Is(err, raft.ErrStopped) || errorspkg.Is(err, errors.ErrStopped)
 }
 
-func (s *EtcdServer) requestCurrentIndex(leaderChangedNotifier <-chan struct{}, requestId uint64) (uint64, error) {
-	err := s.sendReadIndex(requestId)
+func (s *EtcdServer) requestCurrentIndex(leaderChangedNotifier <-chan struct{}, requestID uint64) (uint64, error) {
+	err := s.sendReadIndex(requestID)
 	if err != nil {
 		return 0, err
 	}
@@ -796,19 +876,19 @@ func (s *EtcdServer) requestCurrentIndex(leaderChangedNotifier <-chan struct{}, 
 	for {
 		select {
 		case rs := <-s.r.readStateC:
-			requestIdBytes := uint64ToBigEndianBytes(requestId)
-			gotOwnResponse := bytes.Equal(rs.RequestCtx, requestIdBytes)
+			requestIDBytes := uint64ToBigEndianBytes(requestID)
+			gotOwnResponse := bytes.Equal(rs.RequestCtx, requestIDBytes)
 			if !gotOwnResponse {
 				// a previous request might time out. now we should ignore the response of it and
 				// continue waiting for the response of the current requests.
-				responseId := uint64(0)
+				responseID := uint64(0)
 				if len(rs.RequestCtx) == 8 {
-					responseId = binary.BigEndian.Uint64(rs.RequestCtx)
+					responseID = binary.BigEndian.Uint64(rs.RequestCtx)
 				}
 				lg.Warn(
 					"ignored out-of-date read index response; local node read indexes queueing up and waiting to be in sync with leader",
-					zap.Uint64("sent-request-id", requestId),
-					zap.Uint64("received-request-id", responseId),
+					zap.Uint64("sent-request-id", requestID),
+					zap.Uint64("received-request-id", responseID),
 				)
 				slowReadIndex.Inc()
 				continue
@@ -821,7 +901,7 @@ func (s *EtcdServer) requestCurrentIndex(leaderChangedNotifier <-chan struct{}, 
 		case <-firstCommitInTermNotifier:
 			firstCommitInTermNotifier = s.firstCommitInTerm.Receive()
 			lg.Info("first commit in current term: resending ReadIndex request")
-			err := s.sendReadIndex(requestId)
+			err := s.sendReadIndex(requestID)
 			if err != nil {
 				return 0, err
 			}
@@ -830,10 +910,10 @@ func (s *EtcdServer) requestCurrentIndex(leaderChangedNotifier <-chan struct{}, 
 		case <-retryTimer.C:
 			lg.Warn(
 				"waiting for ReadIndex response took too long, retrying",
-				zap.Uint64("sent-request-id", requestId),
+				zap.Uint64("sent-request-id", requestID),
 				zap.Duration("retry-timeout", readIndexRetryTime),
 			)
-			err := s.sendReadIndex(requestId)
+			err := s.sendReadIndex(requestID)
 			if err != nil {
 				return 0, err
 			}
@@ -864,7 +944,7 @@ func (s *EtcdServer) sendReadIndex(requestIndex uint64) error {
 	cctx, cancel := context.WithTimeout(context.Background(), s.Cfg.ReqTimeout())
 	err := s.r.ReadIndex(cctx, ctxToSend)
 	cancel()
-	if err == raft.ErrStopped {
+	if errorspkg.Is(err, raft.ErrStopped) {
 		return err
 	}
 	if err != nil {

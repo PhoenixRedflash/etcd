@@ -119,15 +119,30 @@ RPC: Range
 
 - print-value-only -- print only value when used with write-out=simple
 
-- consistency -- Linearizable(l) or Serializable(s)
+- consistency -- Linearizable(l) or Serializable(s), defaults to Linearizable(l).
 
 - from-key -- Get keys that are greater than or equal to the given key using byte compare
 
 - keys-only -- Get only the keys
 
-#### Output
+- max-create-revision -- restrict results to kvs with create revision lower or equal than the supplied revision
 
+- min-create-revision -- restrict results to kvs with create revision greater or equal than the supplied revision
+
+- max-mod-revision -- restrict results to kvs with modified revision lower or equal than the supplied revision
+
+- min-mod-revision -- restrict results to kvs with modified revision greater or equal than the supplied revision
+
+#### Output
+Prints the data in format below,
+```
 \<key\>\n\<value\>\n\<next_key\>\n\<next_value\>...
+```
+
+Note serializable requests are better for lower latency requirement, but
+stale data might be returned if serializable option (`--consistency=s`)
+is specified.
+
 
 #### Examples
 
@@ -711,9 +726,18 @@ MEMBER LIST prints the member details for all members associated with an etcd cl
 
 RPC: MemberList
 
+#### Options
+- consistency -- Linearizable(l) or Serializable(s), defaults to Linearizable(l).
+
 #### Output
 
 Prints a humanized table of the member IDs, statuses, names, peer addresses, and client addresses.
+
+Note serializable requests are better for lower latency requirement, but
+stale member list might be returned if serializable option (`--consistency=s`)
+is specified. In some situations users may want to use serializable requests.
+For example, when adding a new member to a one-node cluster, it's reasonable
+and safe to use serializable request before the new added member gets started.
 
 #### Examples
 
@@ -1095,7 +1119,7 @@ DOWNGRADE ENABLE starts a downgrade action to cluster.
 Downgrade enable success, cluster version 3.6
 ```
 
-### DOWNGRADE CANCEL \<TARGET_VERSION\>
+### DOWNGRADE CANCEL
 
 DOWNGRADE CANCEL cancels the ongoing downgrade action to cluster.
 
@@ -1552,7 +1576,7 @@ CHECK provides commands for checking properties of the etcd cluster.
 
 CHECK PERF checks the performance of the etcd cluster for 60 seconds. Running the `check perf` often can create a large keyspace history which can be auto compacted and defragmented using the `--auto-compact` and `--auto-defrag` options as described below.
 
-Notice that different workload models use different configurations in terms of number of clients and throughtput. Here is the configuration for each load:
+Notice that different workload models use different configurations in terms of number of clients and throughput. Here is the configuration for each load:
 
 
 | Load | Number of clients | Number of put requests (requests/sec) |
@@ -1564,7 +1588,7 @@ Notice that different workload models use different configurations in terms of n
 
 The test checks for the following conditions:
 
-- The throughput should be at least 90% of the issued requets
+- The throughput should be at least 90% of the issued request
 - All the requests should be done in less than 500 ms
 - The standard deviation of the requests should be less than 100 ms
 

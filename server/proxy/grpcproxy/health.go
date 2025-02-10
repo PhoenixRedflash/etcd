@@ -16,6 +16,7 @@ package grpcproxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -32,7 +33,9 @@ func HandleHealth(lg *zap.Logger, mux *http.ServeMux, c *clientv3.Client) {
 	if lg == nil {
 		lg = zap.NewNop()
 	}
-	mux.Handle(etcdhttp.PathHealth, etcdhttp.NewHealthHandler(lg, func(excludedAlarms etcdhttp.AlarmSet, serializable bool) etcdhttp.Health { return checkHealth(c) }))
+	mux.Handle(etcdhttp.PathHealth, etcdhttp.NewHealthHandler(lg, func(ctx context.Context, excludedAlarms etcdhttp.StringSet, serializable bool) etcdhttp.Health {
+		return checkHealth(c)
+	}))
 }
 
 // HandleProxyHealth registers health handler on '/proxy/health'.
@@ -40,7 +43,9 @@ func HandleProxyHealth(lg *zap.Logger, mux *http.ServeMux, c *clientv3.Client) {
 	if lg == nil {
 		lg = zap.NewNop()
 	}
-	mux.Handle(etcdhttp.PathProxyHealth, etcdhttp.NewHealthHandler(lg, func(excludedAlarms etcdhttp.AlarmSet, serializable bool) etcdhttp.Health { return checkProxyHealth(c) }))
+	mux.Handle(etcdhttp.PathProxyHealth, etcdhttp.NewHealthHandler(lg, func(ctx context.Context, excludedAlarms etcdhttp.StringSet, serializable bool) etcdhttp.Health {
+		return checkProxyHealth(c)
+	}))
 }
 
 func checkHealth(c *clientv3.Client) etcdhttp.Health {
@@ -48,7 +53,7 @@ func checkHealth(c *clientv3.Client) etcdhttp.Health {
 	ctx, cancel := context.WithTimeout(c.Ctx(), time.Second)
 	_, err := c.Get(ctx, "a")
 	cancel()
-	if err == nil || err == rpctypes.ErrPermissionDenied {
+	if err == nil || errors.Is(err, rpctypes.ErrPermissionDenied) {
 		h.Health = "true"
 	} else {
 		h.Reason = fmt.Sprintf("GET ERROR:%s", err)

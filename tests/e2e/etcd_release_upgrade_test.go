@@ -21,8 +21,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"go.etcd.io/etcd/api/v3/version"
 	"go.etcd.io/etcd/client/pkg/v3/fileutil"
+	"go.etcd.io/etcd/pkg/v3/expect"
 	"go.etcd.io/etcd/tests/v3/framework/e2e"
 )
 
@@ -38,7 +42,7 @@ func TestReleaseUpgrade(t *testing.T) {
 	epc, err := e2e.NewEtcdProcessCluster(context.TODO(), t,
 		e2e.WithVersion(e2e.LastVersion),
 		e2e.WithSnapshotCount(3),
-		e2e.WithBaseScheme("unix"), // to avoid port conflict
+		e2e.WithBasePeerScheme("unix"), // to avoid port conflict
 	)
 	if err != nil {
 		t.Fatalf("could not start etcd process cluster (%v)", err)
@@ -61,7 +65,7 @@ func TestReleaseUpgrade(t *testing.T) {
 		kvs = append(kvs, kv{key: fmt.Sprintf("foo%d", i), val: "bar"})
 	}
 	for i := range kvs {
-		if err := ctlV3Put(cx, kvs[i].key, kvs[i].val, ""); err != nil {
+		if err = ctlV3Put(cx, kvs[i].key, kvs[i].val, ""); err != nil {
 			cx.t.Fatalf("#%d: ctlV3Put error (%v)", i, err)
 		}
 	}
@@ -70,7 +74,7 @@ func TestReleaseUpgrade(t *testing.T) {
 
 	for i := range epc.Procs {
 		t.Logf("Stopping node: %v", i)
-		if err := epc.Procs[i].Stop(); err != nil {
+		if err = epc.Procs[i].Stop(); err != nil {
 			t.Fatalf("#%d: error closing etcd process (%v)", i, err)
 		}
 		t.Logf("Stopped node: %v", i)
@@ -78,15 +82,13 @@ func TestReleaseUpgrade(t *testing.T) {
 		epc.Procs[i].Config().KeepDataDir = true
 
 		t.Logf("Restarting node in the new version: %v", i)
-		if err := epc.Procs[i].Restart(context.TODO()); err != nil {
+		if err = epc.Procs[i].Restart(context.TODO()); err != nil {
 			t.Fatalf("error restarting etcd process (%v)", err)
 		}
 
 		t.Logf("Testing reads after node restarts: %v", i)
 		for j := range kvs {
-			if err := ctlV3Get(cx, []string{kvs[j].key}, []kv{kvs[j]}...); err != nil {
-				cx.t.Fatalf("#%d-%d: ctlV3Get error (%v)", i, j, err)
-			}
+			require.NoErrorf(cx.t, ctlV3Get(cx, []string{kvs[j].key}, []kv{kvs[j]}...), "#%d-%d: ctlV3Get error", i, j)
 		}
 		t.Logf("Tested reads after node restarts: %v", i)
 	}
@@ -97,7 +99,7 @@ func TestReleaseUpgrade(t *testing.T) {
 	// new cluster version needs more time to upgrade
 	ver := version.Cluster(version.Version)
 	for i := 0; i < 7; i++ {
-		if err = e2e.CURLGet(epc, e2e.CURLReq{Endpoint: "/version", Expected: `"etcdcluster":"` + ver}); err != nil {
+		if err = e2e.CURLGet(epc, e2e.CURLReq{Endpoint: "/version", Expected: expect.ExpectedResponse{Value: `"etcdcluster":"` + ver}}); err != nil {
 			t.Logf("#%d: %v is not ready yet (%v)", i, ver, err)
 			time.Sleep(time.Second)
 			continue
@@ -120,9 +122,8 @@ func TestReleaseUpgradeWithRestart(t *testing.T) {
 	epc, err := e2e.NewEtcdProcessCluster(context.TODO(), t,
 		e2e.WithVersion(e2e.LastVersion),
 		e2e.WithSnapshotCount(10),
-		e2e.WithBaseScheme("unix"),
+		e2e.WithBasePeerScheme("unix"),
 	)
-
 	if err != nil {
 		t.Fatalf("could not start etcd process cluster (%v)", err)
 	}
@@ -144,15 +145,11 @@ func TestReleaseUpgradeWithRestart(t *testing.T) {
 		kvs = append(kvs, kv{key: fmt.Sprintf("foo%d", i), val: "bar"})
 	}
 	for i := range kvs {
-		if err := ctlV3Put(cx, kvs[i].key, kvs[i].val, ""); err != nil {
-			cx.t.Fatalf("#%d: ctlV3Put error (%v)", i, err)
-		}
+		require.NoErrorf(cx.t, ctlV3Put(cx, kvs[i].key, kvs[i].val, ""), "#%d: ctlV3Put error", i)
 	}
 
 	for i := range epc.Procs {
-		if err := epc.Procs[i].Stop(); err != nil {
-			t.Fatalf("#%d: error closing etcd process (%v)", i, err)
-		}
+		require.NoErrorf(t, epc.Procs[i].Stop(), "#%d: error closing etcd process", i)
 	}
 
 	var wg sync.WaitGroup
@@ -161,15 +158,11 @@ func TestReleaseUpgradeWithRestart(t *testing.T) {
 		go func(i int) {
 			epc.Procs[i].Config().ExecPath = e2e.BinPath.Etcd
 			epc.Procs[i].Config().KeepDataDir = true
-			if err := epc.Procs[i].Restart(context.TODO()); err != nil {
-				t.Errorf("error restarting etcd process (%v)", err)
-			}
+			assert.NoErrorf(t, epc.Procs[i].Restart(context.TODO()), "error restarting etcd process")
 			wg.Done()
 		}(i)
 	}
 	wg.Wait()
 
-	if err := ctlV3Get(cx, []string{kvs[0].key}, []kv{kvs[0]}...); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, ctlV3Get(cx, []string{kvs[0].key}, []kv{kvs[0]}...))
 }

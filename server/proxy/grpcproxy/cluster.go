@@ -21,13 +21,12 @@ import (
 	"os"
 	"sync"
 
+	"go.uber.org/zap"
 	"golang.org/x/time/rate"
 
 	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/client/v3/naming/endpoints"
-
-	"go.uber.org/zap"
 )
 
 // allow maximum 1 retry per second
@@ -113,9 +112,9 @@ func (cp *clusterProxy) monitor(wa endpoints.WatchChannel) {
 			for _, up := range updates {
 				switch up.Op {
 				case endpoints.Add:
-					cp.umap[up.Endpoint.Addr] = up.Endpoint
+					cp.umap[up.Key] = up.Endpoint
 				case endpoints.Delete:
-					delete(cp.umap, up.Endpoint.Addr)
+					delete(cp.umap, up.Key)
 				}
 			}
 			cp.umu.Unlock()
@@ -139,12 +138,12 @@ func (cp *clusterProxy) membersFromUpdates() ([]*pb.Member, error) {
 	cp.umu.RLock()
 	defer cp.umu.RUnlock()
 	mbs := make([]*pb.Member, 0, len(cp.umap))
-	for addr, upt := range cp.umap {
+	for _, upt := range cp.umap {
 		m, err := decodeMeta(fmt.Sprint(upt.Metadata))
 		if err != nil {
 			return nil, err
 		}
-		mbs = append(mbs, &pb.Member{Name: m.Name, ClientURLs: []string{addr}})
+		mbs = append(mbs, &pb.Member{Name: m.Name, ClientURLs: []string{upt.Addr}})
 	}
 	return mbs, nil
 }

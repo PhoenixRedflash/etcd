@@ -23,6 +23,10 @@ import (
 	"time"
 
 	"github.com/bgentry/speakeasy"
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
+	"go.uber.org/zap"
+	"google.golang.org/grpc/grpclog"
 
 	"go.etcd.io/etcd/client/pkg/v3/logutil"
 	"go.etcd.io/etcd/client/pkg/v3/srv"
@@ -30,11 +34,6 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/pkg/v3/cobrautl"
 	"go.etcd.io/etcd/pkg/v3/flags"
-
-	"github.com/spf13/cobra"
-	"github.com/spf13/pflag"
-	"go.uber.org/zap"
-	"google.golang.org/grpc/grpclog"
 )
 
 // GlobalFlags are flags that defined globally
@@ -48,6 +47,8 @@ type GlobalFlags struct {
 	CommandTimeOut        time.Duration
 	KeepAliveTime         time.Duration
 	KeepAliveTimeout      time.Duration
+	MaxCallSendMsgSize    int
+	MaxCallRecvMsgSize    int
 	DNSClusterServiceName string
 
 	TLS transport.TLSInfo
@@ -129,6 +130,8 @@ func clientConfigFromCmd(cmd *cobra.Command) *clientv3.ConfigSpec {
 	cfg.DialTimeout = dialTimeoutFromCmd(cmd)
 	cfg.KeepAliveTime = keepAliveTimeFromCmd(cmd)
 	cfg.KeepAliveTimeout = keepAliveTimeoutFromCmd(cmd)
+	cfg.MaxCallSendMsgSize = maxCallSendMsgSizeFromCmd(cmd)
+	cfg.MaxCallRecvMsgSize = maxCallRecvMsgSizeFromCmd(cmd)
 
 	cfg.Secure = secureCfgFromCmd(cmd)
 	cfg.Auth = authCfgFromCmd(cmd)
@@ -200,6 +203,22 @@ func keepAliveTimeoutFromCmd(cmd *cobra.Command) time.Duration {
 		cobrautl.ExitWithError(cobrautl.ExitError, err)
 	}
 	return keepAliveTimeout
+}
+
+func maxCallSendMsgSizeFromCmd(cmd *cobra.Command) int {
+	maxRequestBytes, err := cmd.Flags().GetInt("max-request-bytes")
+	if err != nil {
+		cobrautl.ExitWithError(cobrautl.ExitError, err)
+	}
+	return maxRequestBytes
+}
+
+func maxCallRecvMsgSizeFromCmd(cmd *cobra.Command) int {
+	maxReceiveBytes, err := cmd.Flags().GetInt("max-recv-bytes")
+	if err != nil {
+		cobrautl.ExitWithError(cobrautl.ExitError, err)
+	}
+	return maxReceiveBytes
 }
 
 func secureCfgFromCmd(cmd *cobra.Command) *clientv3.SecureConfig {

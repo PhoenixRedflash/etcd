@@ -25,16 +25,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coreos/go-semver/semver"
 	"go.uber.org/zap/zaptest"
+	"golang.org/x/time/rate"
 
 	"go.etcd.io/etcd/api/v3/version"
 	"go.etcd.io/etcd/client/pkg/v3/testutil"
 	"go.etcd.io/etcd/client/pkg/v3/types"
 	stats "go.etcd.io/etcd/server/v3/etcdserver/api/v2stats"
 	"go.etcd.io/raft/v3/raftpb"
-
-	"github.com/coreos/go-semver/semver"
-	"golang.org/x/time/rate"
 )
 
 // TestStreamWriterAttachOutgoingConn tests that outgoingConn can be attached
@@ -235,6 +234,7 @@ func (wrc *waitReadCloser) Read(p []byte) (int, error) {
 	<-wrc.closec
 	return 0, io.EOF
 }
+
 func (wrc *waitReadCloser) Close() error {
 	close(wrc.closec)
 	return nil
@@ -257,7 +257,7 @@ func TestStreamReaderDialDetectUnsupport(t *testing.T) {
 		}
 
 		_, err := sr.dial(typ)
-		if err != errUnsupportedStreamType {
+		if !errors.Is(err, errUnsupportedStreamType) {
 			t.Errorf("#%d: error = %v, want %v", i, err, errUnsupportedStreamType)
 		}
 	}

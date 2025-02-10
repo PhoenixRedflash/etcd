@@ -21,13 +21,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
+
 	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/client/pkg/v3/transport"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	integration2 "go.etcd.io/etcd/tests/v3/framework/integration"
 	"go.etcd.io/etcd/tests/v3/framework/testutils"
 	clientv3test "go.etcd.io/etcd/tests/v3/integration/clientv3"
-	"google.golang.org/grpc"
 )
 
 var (
@@ -53,12 +55,10 @@ func TestDialTLSExpired(t *testing.T) {
 	defer clus.Terminate(t)
 
 	tls, err := testTLSInfoExpired.ClientConfig()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	// expect remote errors "tls: bad certificate"
 	_, err = integration2.NewClient(t, clientv3.Config{
-		Endpoints:   []string{clus.Members[0].GRPCURL()},
+		Endpoints:   []string{clus.Members[0].GRPCURL},
 		DialTimeout: 3 * time.Second,
 		DialOptions: []grpc.DialOption{grpc.WithBlock()},
 		TLS:         tls,
@@ -76,7 +76,7 @@ func TestDialTLSNoConfig(t *testing.T) {
 	defer clus.Terminate(t)
 	// expect "signed by unknown authority"
 	c, err := integration2.NewClient(t, clientv3.Config{
-		Endpoints:   []string{clus.Members[0].GRPCURL()},
+		Endpoints:   []string{clus.Members[0].GRPCURL},
 		DialTimeout: time.Second,
 		DialOptions: []grpc.DialOption{grpc.WithBlock()},
 	})
@@ -109,7 +109,7 @@ func testDialSetEndpoints(t *testing.T, setBefore bool) {
 	// get endpoint list
 	eps := make([]string, 3)
 	for i := range eps {
-		eps[i] = clus.Members[i].GRPCURL()
+		eps[i] = clus.Members[i].GRPCURL
 	}
 	toKill := rand.Intn(len(eps))
 
@@ -119,9 +119,7 @@ func testDialSetEndpoints(t *testing.T, setBefore bool) {
 		DialOptions: []grpc.DialOption{grpc.WithBlock()},
 	}
 	cli, err := integration2.NewClient(t, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer cli.Close()
 
 	if setBefore {
@@ -136,9 +134,8 @@ func testDialSetEndpoints(t *testing.T, setBefore bool) {
 	}
 	time.Sleep(time.Second * 2)
 	ctx, cancel := context.WithTimeout(context.Background(), integration2.RequestWaitTimeout)
-	if _, err = cli.Get(ctx, "foo", clientv3.WithSerializable()); err != nil {
-		t.Fatal(err)
-	}
+	_, err = cli.Get(ctx, "foo", clientv3.WithSerializable())
+	require.NoError(t, err)
 	cancel()
 }
 
@@ -150,7 +147,7 @@ func TestSwitchSetEndpoints(t *testing.T) {
 	defer clus.Terminate(t)
 
 	// get non partitioned members endpoints
-	eps := []string{clus.Members[1].GRPCURL(), clus.Members[2].GRPCURL()}
+	eps := []string{clus.Members[1].GRPCURL, clus.Members[2].GRPCURL}
 
 	cli := clus.Client(0)
 	clus.Members[0].InjectPartition(t, clus.Members[1:]...)
@@ -159,9 +156,8 @@ func TestSwitchSetEndpoints(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if _, err := cli.Get(ctx, "foo"); err != nil {
-		t.Fatal(err)
-	}
+	_, err := cli.Get(ctx, "foo")
+	require.NoError(t, err)
 }
 
 func TestRejectOldCluster(t *testing.T) {
@@ -171,15 +167,13 @@ func TestRejectOldCluster(t *testing.T) {
 	defer clus.Terminate(t)
 
 	cfg := clientv3.Config{
-		Endpoints:        []string{clus.Members[0].GRPCURL(), clus.Members[1].GRPCURL()},
+		Endpoints:        []string{clus.Members[0].GRPCURL, clus.Members[1].GRPCURL},
 		DialTimeout:      5 * time.Second,
 		DialOptions:      []grpc.DialOption{grpc.WithBlock()},
 		RejectOldCluster: true,
 	}
 	cli, err := integration2.NewClient(t, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	cli.Close()
 }
 
@@ -191,9 +185,7 @@ func TestDialForeignEndpoint(t *testing.T) {
 	defer clus.Terminate(t)
 
 	conn, err := clus.Client(0).Dial(clus.Client(1).Endpoints()[0])
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer conn.Close()
 
 	// grpc can return a lazy connection that's not connected yet; confirm
@@ -201,9 +193,8 @@ func TestDialForeignEndpoint(t *testing.T) {
 	kvc := clientv3.NewKVFromKVClient(pb.NewKVClient(conn), clus.Client(0))
 	ctx, cancel := context.WithTimeout(context.TODO(), 5*time.Second)
 	defer cancel()
-	if _, gerr := kvc.Get(ctx, "abc"); gerr != nil {
-		t.Fatal(err)
-	}
+	_, gerr := kvc.Get(ctx, "abc")
+	require.NoError(t, gerr)
 }
 
 // TestSetEndpointAndPut checks that a Put following a SetEndpoints
@@ -213,7 +204,7 @@ func TestSetEndpointAndPut(t *testing.T) {
 	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 2})
 	defer clus.Terminate(t)
 
-	clus.Client(1).SetEndpoints(clus.Members[0].GRPCURL())
+	clus.Client(1).SetEndpoints(clus.Members[0].GRPCURL)
 	_, err := clus.Client(1).Put(context.TODO(), "foo", "bar")
 	if err != nil && !strings.Contains(err.Error(), "closing") {
 		t.Fatal(err)

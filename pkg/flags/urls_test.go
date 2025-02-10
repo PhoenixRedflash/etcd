@@ -18,6 +18,9 @@ import (
 	"net/url"
 	"reflect"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestValidateURLsValueBad(t *testing.T) {
@@ -38,9 +41,7 @@ func TestValidateURLsValueBad(t *testing.T) {
 	}
 	for i, in := range tests {
 		u := URLsValue{}
-		if err := u.Set(in); err == nil {
-			t.Errorf(`#%d: unexpected nil error for in=%q`, i, in)
-		}
+		assert.Errorf(t, u.Set(in), `#%d: unexpected nil error for in=%q`, i, in)
 	}
 }
 
@@ -66,8 +67,6 @@ func TestNewURLsValue(t *testing.T) {
 	}
 	for i := range tests {
 		uu := []url.URL(*NewURLsValue(tests[i].s))
-		if !reflect.DeepEqual(tests[i].exp, uu) {
-			t.Fatalf("#%d: expected %+v, got %+v", i, tests[i].exp, uu)
-		}
+		require.Truef(t, reflect.DeepEqual(tests[i].exp, uu), "#%d: expected %+v, got %+v", i, tests[i].exp, uu)
 	}
 }

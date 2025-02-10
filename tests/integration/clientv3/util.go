@@ -16,6 +16,7 @@ package clientv3test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -64,7 +65,7 @@ func IsClientTimeout(err error) bool {
 	if err == nil {
 		return false
 	}
-	if err == context.DeadlineExceeded {
+	if errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
 	ev, ok := status.FromError(err)
@@ -79,7 +80,7 @@ func IsCanceled(err error) bool {
 	if err == nil {
 		return false
 	}
-	if err == context.Canceled {
+	if errors.Is(err, context.Canceled) {
 		return true
 	}
 	ev, ok := status.FromError(err)
@@ -94,7 +95,7 @@ func IsUnavailable(err error) bool {
 	if err == nil {
 		return false
 	}
-	if err == context.Canceled {
+	if errors.Is(err, context.Canceled) {
 		return true
 	}
 	ev, ok := status.FromError(err)
@@ -113,7 +114,6 @@ func populateDataIntoCluster(t *testing.T, cluster *integration2.Cluster, numKey
 	for i := 0; i < numKeys; i++ {
 		_, err := cluster.RandClient().Put(ctx,
 			fmt.Sprintf("%s-%v", t.Name(), i), strings.Repeat("a", valueSize))
-
 		if err != nil {
 			t.Errorf("populating data expected no error, but got %v", err)
 		}

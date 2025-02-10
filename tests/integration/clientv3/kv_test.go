@@ -17,6 +17,7 @@ package clientv3test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"reflect"
@@ -25,6 +26,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -50,24 +52,22 @@ func TestKVPutError(t *testing.T) {
 	ctx := context.TODO()
 
 	_, err := kv.Put(ctx, "", "bar")
-	if err != rpctypes.ErrEmptyKey {
+	if !errors.Is(err, rpctypes.ErrEmptyKey) {
 		t.Fatalf("expected %v, got %v", rpctypes.ErrEmptyKey, err)
 	}
 
 	_, err = kv.Put(ctx, "key", strings.Repeat("a", int(maxReqBytes+100)))
-	if err != rpctypes.ErrRequestTooLarge {
+	if !errors.Is(err, rpctypes.ErrRequestTooLarge) {
 		t.Fatalf("expected %v, got %v", rpctypes.ErrRequestTooLarge, err)
 	}
 
 	_, err = kv.Put(ctx, "foo1", strings.Repeat("a", int(maxReqBytes-50)))
-	if err != nil { // below quota
-		t.Fatal(err)
-	}
+	require.NoError(t, err) // below quota
 
 	time.Sleep(1 * time.Second) // give enough time for commit
 
 	_, err = kv.Put(ctx, "foo2", strings.Repeat("a", int(maxReqBytes-50)))
-	if err != rpctypes.ErrNoSpace { // over quota
+	if !errors.Is(err, rpctypes.ErrNoSpace) { // over quota
 		t.Fatalf("expected %v, got %v", rpctypes.ErrNoSpace, err)
 	}
 }
@@ -90,7 +90,7 @@ func TestKVPutWithLease(t *testing.T) {
 
 	key := "hello"
 	val := "world"
-	if _, err := kv.Put(ctx, key, val, clientv3.WithLease(lease.ID)); err != nil {
+	if _, err = kv.Put(ctx, key, val, clientv3.WithLease(lease.ID)); err != nil {
 		t.Fatalf("couldn't put %q (%v)", key, err)
 	}
 	resp, err := kv.Get(ctx, key)
@@ -118,21 +118,17 @@ func TestKVPutWithIgnoreValue(t *testing.T) {
 	kv := clus.RandClient()
 
 	_, err := kv.Put(context.TODO(), "foo", "", clientv3.WithIgnoreValue())
-	if err != rpctypes.ErrKeyNotFound {
+	if !errors.Is(err, rpctypes.ErrKeyNotFound) {
 		t.Fatalf("err expected %v, got %v", rpctypes.ErrKeyNotFound, err)
 	}
 
-	if _, err := kv.Put(context.TODO(), "foo", "bar"); err != nil {
-		t.Fatal(err)
-	}
+	_, err = kv.Put(context.TODO(), "foo", "bar")
+	require.NoError(t, err)
 
-	if _, err := kv.Put(context.TODO(), "foo", "", clientv3.WithIgnoreValue()); err != nil {
-		t.Fatal(err)
-	}
+	_, err = kv.Put(context.TODO(), "foo", "", clientv3.WithIgnoreValue())
+	require.NoError(t, err)
 	rr, rerr := kv.Get(context.TODO(), "foo")
-	if rerr != nil {
-		t.Fatal(rerr)
-	}
+	require.NoError(t, rerr)
 	if len(rr.Kvs) != 1 {
 		t.Fatalf("len(rr.Kvs) expected 1, got %d", len(rr.Kvs))
 	}
@@ -157,22 +153,18 @@ func TestKVPutWithIgnoreLease(t *testing.T) {
 		t.Errorf("failed to create lease %v", err)
 	}
 
-	if _, err := kv.Put(context.TODO(), "zoo", "bar", clientv3.WithIgnoreLease()); err != rpctypes.ErrKeyNotFound {
+	if _, err = kv.Put(context.TODO(), "zoo", "bar", clientv3.WithIgnoreLease()); !errors.Is(err, rpctypes.ErrKeyNotFound) {
 		t.Fatalf("err expected %v, got %v", rpctypes.ErrKeyNotFound, err)
 	}
 
-	if _, err := kv.Put(context.TODO(), "zoo", "bar", clientv3.WithLease(resp.ID)); err != nil {
-		t.Fatal(err)
-	}
+	_, err = kv.Put(context.TODO(), "zoo", "bar", clientv3.WithLease(resp.ID))
+	require.NoError(t, err)
 
-	if _, err := kv.Put(context.TODO(), "zoo", "bar1", clientv3.WithIgnoreLease()); err != nil {
-		t.Fatal(err)
-	}
+	_, err = kv.Put(context.TODO(), "zoo", "bar1", clientv3.WithIgnoreLease())
+	require.NoError(t, err)
 
 	rr, rerr := kv.Get(context.TODO(), "zoo")
-	if rerr != nil {
-		t.Fatal(rerr)
-	}
+	require.NoError(t, rerr)
 	if len(rr.Kvs) != 1 {
 		t.Fatalf("len(rr.Kvs) expected 1, got %d", len(rr.Kvs))
 	}
@@ -199,7 +191,7 @@ func TestKVPutWithRequireLeader(t *testing.T) {
 
 	kv := clus.Client(0)
 	_, err := kv.Put(clientv3.WithRequireLeader(context.Background()), "foo", "bar")
-	if err != rpctypes.ErrNoLeader {
+	if !errors.Is(err, rpctypes.ErrNoLeader) {
 		t.Fatal(err)
 	}
 
@@ -208,13 +200,9 @@ func TestKVPutWithRequireLeader(t *testing.T) {
 		`type="unary"`,
 		fmt.Sprintf(`client_api_version="%v"`, version.APIVersion),
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	cv, err := strconv.ParseInt(cnt, 10, 32)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	if cv < 1 { // >1 when retried
 		t.Fatalf("expected at least 1, got %q", cnt)
 	}
@@ -297,9 +285,7 @@ func TestKVGetErrConnClosed(t *testing.T) {
 	cli := clus.Client(0)
 
 	donec := make(chan struct{})
-	if err := cli.Close(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, cli.Close())
 	clus.TakeClient(0)
 
 	go func() {
@@ -325,9 +311,7 @@ func TestKVNewAfterClose(t *testing.T) {
 
 	cli := clus.Client(0)
 	clus.TakeClient(0)
-	if err := cli.Close(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, cli.Close())
 
 	donec := make(chan struct{})
 	go func() {
@@ -413,12 +397,12 @@ func TestKVCompactError(t *testing.T) {
 	}
 
 	_, err = kv.Compact(ctx, 6)
-	if err != rpctypes.ErrCompacted {
+	if !errors.Is(err, rpctypes.ErrCompacted) {
 		t.Fatalf("expected %v, got %v", rpctypes.ErrCompacted, err)
 	}
 
 	_, err = kv.Compact(ctx, 100)
-	if err != rpctypes.ErrFutureRev {
+	if !errors.Is(err, rpctypes.ErrFutureRev) {
 		t.Fatalf("expected %v, got %v", rpctypes.ErrFutureRev, err)
 	}
 }
@@ -443,7 +427,7 @@ func TestKVCompact(t *testing.T) {
 		t.Fatalf("couldn't compact kv space (%v)", err)
 	}
 	_, err = kv.Compact(ctx, 7)
-	if err == nil || err != rpctypes.ErrCompacted {
+	if err == nil || !errors.Is(err, rpctypes.ErrCompacted) {
 		t.Fatalf("error got %v, want %v", err, rpctypes.ErrCompacted)
 	}
 
@@ -460,7 +444,7 @@ func TestKVCompact(t *testing.T) {
 	if !wr.Canceled {
 		t.Fatalf("expected canceled watcher on compacted revision, got %v", wr.Canceled)
 	}
-	if wr.Err() != rpctypes.ErrCompacted {
+	if !errors.Is(wr.Err(), rpctypes.ErrCompacted) {
 		t.Fatalf("watch response error expected %v, got %v", rpctypes.ErrCompacted, wr.Err())
 	}
 	wr, ok := <-wchan
@@ -472,7 +456,7 @@ func TestKVCompact(t *testing.T) {
 	}
 
 	_, err = kv.Compact(ctx, 1000)
-	if err == nil || err != rpctypes.ErrFutureRev {
+	if err == nil || !errors.Is(err, rpctypes.ErrFutureRev) {
 		t.Fatalf("error got %v, want %v", err, rpctypes.ErrFutureRev)
 	}
 }
@@ -492,9 +476,8 @@ func TestKVGetRetry(t *testing.T) {
 	kv := clus.Client(fIdx)
 	ctx := context.TODO()
 
-	if _, err := kv.Put(ctx, "foo", "bar"); err != nil {
-		t.Fatal(err)
-	}
+	_, err := kv.Put(ctx, "foo", "bar")
+	require.NoError(t, err)
 
 	clus.Members[fIdx].Stop(t)
 
@@ -649,9 +632,8 @@ func TestKVPutAtMostOnce(t *testing.T) {
 	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 1, UseBridge: true})
 	defer clus.Terminate(t)
 
-	if _, err := clus.Client(0).Put(context.TODO(), "k", "1"); err != nil {
-		t.Fatal(err)
-	}
+	_, err := clus.Client(0).Put(context.TODO(), "k", "1")
+	require.NoError(t, err)
 
 	for i := 0; i < 10; i++ {
 		clus.Members[0].Bridge().DropConnections()
@@ -663,7 +645,7 @@ func TestKVPutAtMostOnce(t *testing.T) {
 				time.Sleep(5 * time.Millisecond)
 			}
 		}()
-		_, err := clus.Client(0).Put(context.TODO(), "k", "v")
+		_, err = clus.Client(0).Put(context.TODO(), "k", "v")
 		<-donec
 		if err != nil {
 			break
@@ -671,9 +653,7 @@ func TestKVPutAtMostOnce(t *testing.T) {
 	}
 
 	resp, err := clus.Client(0).Get(context.TODO(), "k")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	if resp.Kvs[0].Version > 11 {
 		t.Fatalf("expected version <= 10, got %+v", resp.Kvs[0])
 	}
@@ -702,14 +682,12 @@ func TestKVLargeRequests(t *testing.T) {
 		// without proper client-side receive size limit
 		// "code = ResourceExhausted desc = grpc: received message larger than max (5242929 vs. 4194304)"
 		{
-
 			maxRequestBytesServer:  7*1024*1024 + 512*1024,
 			maxCallSendBytesClient: 7 * 1024 * 1024,
 			maxCallRecvBytesClient: 0,
 			valueSize:              5 * 1024 * 1024,
 			expectError:            nil,
 		},
-
 		{
 			maxRequestBytesServer:  10 * 1024 * 1024,
 			maxCallSendBytesClient: 100 * 1024 * 1024,
@@ -751,8 +729,9 @@ func TestKVLargeRequests(t *testing.T) {
 		cli := clus.Client(0)
 		_, err := cli.Put(context.TODO(), "foo", strings.Repeat("a", test.valueSize))
 
-		if _, ok := err.(rpctypes.EtcdError); ok {
-			if err != test.expectError {
+		var etcdErr rpctypes.EtcdError
+		if errors.As(err, &etcdErr) {
+			if !errors.Is(err, test.expectError) {
 				t.Errorf("#%d: expected %v, got %v", i, test.expectError, err)
 			}
 		} else if err != nil && !strings.HasPrefix(err.Error(), test.expectError.Error()) {
@@ -797,7 +776,7 @@ func TestKVForLearner(t *testing.T) {
 	// 1. clus.Members[3] is the newly added learner member, which was appended to clus.Members
 	// 2. we are using member's grpcAddr instead of clientURLs as the endpoint for clientv3.Config,
 	// because the implementation of integration test has diverged from embed/etcd.go.
-	learnerEp := clus.Members[3].GRPCURL()
+	learnerEp := clus.Members[3].GRPCURL
 	cfg := clientv3.Config{
 		Endpoints:   []string{learnerEp},
 		DialTimeout: 5 * time.Second,
@@ -870,7 +849,7 @@ func TestBalancerSupportLearner(t *testing.T) {
 	}
 
 	// clus.Members[3] is the newly added learner member, which was appended to clus.Members
-	learnerEp := clus.Members[3].GRPCURL()
+	learnerEp := clus.Members[3].GRPCURL
 	cfg := clientv3.Config{
 		Endpoints:   []string{learnerEp},
 		DialTimeout: 5 * time.Second,
@@ -885,12 +864,12 @@ func TestBalancerSupportLearner(t *testing.T) {
 	// wait until learner member is ready
 	<-clus.Members[3].ReadyNotify()
 
-	if _, err := cli.Get(context.Background(), "foo"); err == nil {
+	if _, err = cli.Get(context.Background(), "foo"); err == nil {
 		t.Fatalf("expect Get request to learner to fail, got no error")
 	}
 	t.Logf("Expected: Read from learner error: %v", err)
 
-	eps := []string{learnerEp, clus.Members[0].GRPCURL()}
+	eps := []string{learnerEp, clus.Members[0].GRPCURL}
 	cli.SetEndpoints(eps...)
 	if _, err := cli.Get(context.Background(), "foo"); err != nil {
 		t.Errorf("expect no error (balancer should retry when request to learner fails), got error: %v", err)

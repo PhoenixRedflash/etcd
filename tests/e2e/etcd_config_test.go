@@ -17,6 +17,7 @@ package e2e
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 	"testing"
@@ -24,10 +25,10 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
 	"golang.org/x/sync/errgroup"
 
 	"go.etcd.io/etcd/pkg/v3/expect"
+	"go.etcd.io/etcd/server/v3/embed"
 	"go.etcd.io/etcd/tests/v3/framework/config"
 	"go.etcd.io/etcd/tests/v3/framework/e2e"
 )
@@ -38,15 +39,9 @@ func TestEtcdExampleConfig(t *testing.T) {
 	e2e.SkipInShortMode(t)
 
 	proc, err := e2e.SpawnCmd([]string{e2e.BinPath.Etcd, "--config-file", exampleConfigFile}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = e2e.WaitReadyExpectProc(context.TODO(), proc, e2e.EtcdServerReadyLines); err != nil {
-		t.Fatal(err)
-	}
-	if err = proc.Stop(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.NoError(t, e2e.WaitReadyExpectProc(context.TODO(), proc, e2e.EtcdServerReadyLines))
+	require.NoError(t, proc.Stop())
 }
 
 func TestEtcdMultiPeer(t *testing.T) {
@@ -80,16 +75,13 @@ func TestEtcdMultiPeer(t *testing.T) {
 			"--initial-cluster", ic,
 		}
 		p, err := e2e.SpawnCmd(args, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		procs[i] = p
 	}
 
 	for _, p := range procs {
-		if err := e2e.WaitReadyExpectProc(context.TODO(), p, e2e.EtcdServerReadyLines); err != nil {
-			t.Fatal(err)
-		}
+		err := e2e.WaitReadyExpectProc(context.TODO(), p, e2e.EtcdServerReadyLines)
+		require.NoError(t, err)
 	}
 }
 
@@ -109,15 +101,56 @@ func TestEtcdUnixPeers(t *testing.T) {
 		}, nil,
 	)
 	defer os.Remove("etcd.unix:1")
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	require.NoError(t, e2e.WaitReadyExpectProc(context.TODO(), proc, e2e.EtcdServerReadyLines))
+	require.NoError(t, proc.Stop())
+}
+
+// TestEtcdListenMetricsURLsWithMissingClientTLSInfo checks that the HTTPs listen metrics URL
+// but without the client TLS info will fail its verification.
+func TestEtcdListenMetricsURLsWithMissingClientTLSInfo(t *testing.T) {
+	e2e.SkipInShortMode(t)
+
+	tempDir := t.TempDir()
+	defer os.RemoveAll(tempDir)
+
+	caFile, certFiles, keyFiles, err := generateCertsForIPs(tempDir, []net.IP{net.ParseIP("127.0.0.1")})
+	require.NoError(t, err)
+
+	// non HTTP but metrics URL is HTTPS, invalid when the client TLS info is not provided
+	clientURL := fmt.Sprintf("http://localhost:%d", e2e.EtcdProcessBasePort)
+	peerURL := fmt.Sprintf("https://localhost:%d", e2e.EtcdProcessBasePort+1)
+	listenMetricsURL := fmt.Sprintf("https://localhost:%d", e2e.EtcdProcessBasePort+2)
+
+	commonArgs := []string{
+		e2e.BinPath.Etcd,
+		"--name", "e0",
+		"--data-dir", tempDir,
+
+		"--listen-client-urls", clientURL,
+		"--advertise-client-urls", clientURL,
+
+		"--initial-advertise-peer-urls", peerURL,
+		"--listen-peer-urls", peerURL,
+
+		"--initial-cluster", "e0=" + peerURL,
+
+		"--listen-metrics-urls", listenMetricsURL,
+
+		"--peer-cert-file", certFiles[0],
+		"--peer-key-file", keyFiles[0],
+		"--peer-trusted-ca-file", caFile,
+		"--peer-client-cert-auth",
 	}
-	if err = e2e.WaitReadyExpectProc(context.TODO(), proc, e2e.EtcdServerReadyLines); err != nil {
-		t.Fatal(err)
-	}
-	if err = proc.Stop(); err != nil {
-		t.Fatal(err)
-	}
+
+	proc, err := e2e.SpawnCmd(commonArgs, nil)
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, proc.Stop())
+		_ = proc.Close()
+	}()
+
+	require.NoError(t, e2e.WaitReadyExpectProc(context.TODO(), proc, []string{embed.ErrMissingClientTLSInfoForMetricsURL.Error()}))
 }
 
 // TestEtcdPeerCNAuth checks that the inter peer auth based on CN of cert is working correctly.
@@ -180,9 +213,7 @@ func TestEtcdPeerCNAuth(t *testing.T) {
 		commonArgs = append(commonArgs, args...)
 
 		p, err := e2e.SpawnCmd(commonArgs, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		procs[i] = p
 	}
 
@@ -193,9 +224,95 @@ func TestEtcdPeerCNAuth(t *testing.T) {
 		} else {
 			expect = []string{"remote error: tls: bad certificate"}
 		}
-		if err := e2e.WaitReadyExpectProc(context.TODO(), p, expect); err != nil {
-			t.Fatal(err)
+		err := e2e.WaitReadyExpectProc(context.TODO(), p, expect)
+		require.NoError(t, err)
+	}
+}
+
+// TestEtcdPeerMultiCNAuth checks that the inter peer auth based on CN of cert is working correctly
+// when there are multiple allowed values for the CN.
+func TestEtcdPeerMultiCNAuth(t *testing.T) {
+	e2e.SkipInShortMode(t)
+
+	peers, tmpdirs := make([]string, 3), make([]string, 3)
+	for i := range peers {
+		peers[i] = fmt.Sprintf("e%d=https://127.0.0.1:%d", i, e2e.EtcdProcessBasePort+i)
+		tmpdirs[i] = t.TempDir()
+	}
+	ic := strings.Join(peers, ",")
+	procs := make([]*expect.ExpectProcess, len(peers))
+	defer func() {
+		for i := range procs {
+			if procs[i] != nil {
+				procs[i].Stop()
+				procs[i].Close()
+			}
 		}
+	}()
+
+	// all nodes have unique certs with different CNs
+	// node 0 and 1 have a cert with one of the correct CNs, node 2 doesn't
+	for i := range procs {
+		commonArgs := []string{
+			e2e.BinPath.Etcd,
+			"--name", fmt.Sprintf("e%d", i),
+			"--listen-client-urls", "http://0.0.0.0:0",
+			"--data-dir", tmpdirs[i],
+			"--advertise-client-urls", "http://0.0.0.0:0",
+			"--listen-peer-urls", fmt.Sprintf("https://127.0.0.1:%d,https://127.0.0.1:%d", e2e.EtcdProcessBasePort+i, e2e.EtcdProcessBasePort+len(peers)+i),
+			"--initial-advertise-peer-urls", fmt.Sprintf("https://127.0.0.1:%d", e2e.EtcdProcessBasePort+i),
+			"--initial-cluster", ic,
+		}
+
+		var args []string
+		switch i {
+		case 0:
+			args = []string{
+				"--peer-cert-file", e2e.CertPath, // server.crt has CN "example.com".
+				"--peer-key-file", e2e.PrivateKeyPath,
+				"--peer-client-cert-file", e2e.CertPath,
+				"--peer-client-key-file", e2e.PrivateKeyPath,
+				"--peer-trusted-ca-file", e2e.CaPath,
+				"--peer-client-cert-auth",
+				"--peer-cert-allowed-cn", "example.com,example2.com",
+			}
+		case 1:
+			args = []string{
+				"--peer-cert-file", e2e.CertPath2, // server2.crt has CN "example2.com".
+				"--peer-key-file", e2e.PrivateKeyPath2,
+				"--peer-client-cert-file", e2e.CertPath2,
+				"--peer-client-key-file", e2e.PrivateKeyPath2,
+				"--peer-trusted-ca-file", e2e.CaPath,
+				"--peer-client-cert-auth",
+				"--peer-cert-allowed-cn", "example.com,example2.com",
+			}
+		default:
+			args = []string{
+				"--peer-cert-file", e2e.CertPath3, // server3.crt has CN "ca".
+				"--peer-key-file", e2e.PrivateKeyPath3,
+				"--peer-client-cert-file", e2e.CertPath3,
+				"--peer-client-key-file", e2e.PrivateKeyPath3,
+				"--peer-trusted-ca-file", e2e.CaPath,
+				"--peer-client-cert-auth",
+				"--peer-cert-allowed-cn", "example.com,example2.com",
+			}
+		}
+
+		commonArgs = append(commonArgs, args...)
+		p, err := e2e.SpawnCmd(commonArgs, nil)
+		require.NoError(t, err)
+		procs[i] = p
+	}
+
+	for i, p := range procs {
+		var expect []string
+		if i <= 1 {
+			expect = e2e.EtcdServerReadyLines
+		} else {
+			expect = []string{"remote error: tls: bad certificate"}
+		}
+		err := e2e.WaitReadyExpectProc(context.TODO(), p, expect)
+		require.NoError(t, err)
 	}
 }
 
@@ -256,9 +373,7 @@ func TestEtcdPeerNameAuth(t *testing.T) {
 		commonArgs = append(commonArgs, args...)
 
 		p, err := e2e.SpawnCmd(commonArgs, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		procs[i] = p
 	}
 
@@ -269,9 +384,114 @@ func TestEtcdPeerNameAuth(t *testing.T) {
 		} else {
 			expect = []string{"client certificate authentication failed"}
 		}
-		if err := e2e.WaitReadyExpectProc(context.TODO(), p, expect); err != nil {
-			t.Fatal(err)
+		err := e2e.WaitReadyExpectProc(context.TODO(), p, expect)
+		require.NoError(t, err)
+	}
+}
+
+// TestEtcdPeerLocalAddr checks that the inter peer auth works with when
+// the member LocalAddr is set.
+func TestEtcdPeerLocalAddr(t *testing.T) {
+	e2e.SkipInShortMode(t)
+
+	nodeIP, err := getLocalIP()
+	t.Log("Using node IP", nodeIP)
+	require.NoError(t, err)
+
+	peers, tmpdirs := make([]string, 3), make([]string, 3)
+
+	for i := range peers {
+		peerIP := nodeIP
+		if i == 0 {
+			peerIP = "127.0.0.1"
 		}
+		peers[i] = fmt.Sprintf("e%d=https://%s:%d", i, peerIP, e2e.EtcdProcessBasePort+i)
+		tmpdirs[i] = t.TempDir()
+	}
+	procs := make([]*expect.ExpectProcess, len(peers))
+	defer func() {
+		for i := range procs {
+			if procs[i] != nil {
+				procs[i].Stop()
+				procs[i].Close()
+			}
+			os.RemoveAll(tmpdirs[i])
+		}
+	}()
+
+	tempDir := t.TempDir()
+	caFile, certFiles, keyFiles, err := generateCertsForIPs(tempDir, []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP(nodeIP)})
+	require.NoError(t, err)
+
+	defer func() {
+		os.RemoveAll(tempDir)
+	}()
+
+	// node 0 (127.0.0.1) does not set `--experimental-set-member-localaddr`,
+	// while nodes 1 and nodes 2 do.
+	//
+	// node 0's peer certificate is signed for 127.0.0.1, but it uses the host
+	// IP (by default) to communicate with peers, so they don't match.
+	// Accordingly, other peers will reject connections from node 0.
+	//
+	// Both node 1 and node 2's peer certificates are signed for the host IP,
+	// and they also communicate with peers using the host IP (explicitly set
+	// with --initial-advertise-peer-urls and
+	// --experimental-set-member-localaddr), so node 0 has no issue connecting
+	// to them.
+	//
+	// Refer to https://github.com/etcd-io/etcd/issues/17068.
+	for i := range procs {
+		peerIP := nodeIP
+		if i == 0 {
+			peerIP = "127.0.0.1"
+		}
+		ic := strings.Join(peers, ",")
+		commonArgs := []string{
+			e2e.BinPath.Etcd,
+			"--name", fmt.Sprintf("e%d", i),
+			"--listen-client-urls", "http://0.0.0.0:0",
+			"--data-dir", tmpdirs[i],
+			"--advertise-client-urls", "http://0.0.0.0:0",
+			"--initial-advertise-peer-urls", fmt.Sprintf("https://%s:%d", peerIP, e2e.EtcdProcessBasePort+i),
+			"--listen-peer-urls", fmt.Sprintf("https://%s:%d,https://%s:%d", peerIP, e2e.EtcdProcessBasePort+i, peerIP, e2e.EtcdProcessBasePort+len(peers)+i),
+			"--initial-cluster", ic,
+		}
+
+		var args []string
+		if i == 0 {
+			args = []string{
+				"--peer-cert-file", certFiles[0],
+				"--peer-key-file", keyFiles[0],
+				"--peer-trusted-ca-file", caFile,
+				"--peer-client-cert-auth",
+			}
+		} else {
+			args = []string{
+				"--peer-cert-file", certFiles[1],
+				"--peer-key-file", keyFiles[1],
+				"--peer-trusted-ca-file", caFile,
+				"--peer-client-cert-auth",
+				"--experimental-set-member-localaddr",
+			}
+		}
+
+		commonArgs = append(commonArgs, args...)
+
+		p, err := e2e.SpawnCmd(commonArgs, nil)
+		require.NoError(t, err)
+		procs[i] = p
+	}
+
+	for i, p := range procs {
+		var expect []string
+		if i == 0 {
+			expect = e2e.EtcdServerReadyLines
+		} else {
+			expect = []string{"x509: certificate is valid for 127.0.0.1, not "}
+		}
+		err := e2e.WaitReadyExpectProc(context.TODO(), p, expect)
+		require.NoError(t, err)
 	}
 }
 
@@ -296,7 +516,7 @@ func TestGrpcproxyAndCommonName(t *testing.T) {
 		"--cacert", e2e.CaPath,
 	}
 
-	err := e2e.SpawnWithExpect(argsWithNonEmptyCN, "cert has non empty Common Name")
+	err := e2e.SpawnWithExpect(argsWithNonEmptyCN, expect.ExpectedResponse{Value: "cert has non empty Common Name"})
 	require.ErrorContains(t, err, "cert has non empty Common Name")
 
 	p, err := e2e.SpawnCmd(argsWithEmptyCN, nil)
@@ -306,9 +526,7 @@ func TestGrpcproxyAndCommonName(t *testing.T) {
 		}
 	}()
 
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 }
 
 func TestGrpcproxyAndListenCipherSuite(t *testing.T) {
@@ -341,12 +559,8 @@ func TestGrpcproxyAndListenCipherSuite(t *testing.T) {
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
 			pw, err := e2e.SpawnCmd(test.args, nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err = pw.Stop(); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+			require.NoError(t, pw.Stop())
 		})
 	}
 }
@@ -355,15 +569,9 @@ func TestBootstrapDefragFlag(t *testing.T) {
 	e2e.SkipInShortMode(t)
 
 	proc, err := e2e.SpawnCmd([]string{e2e.BinPath.Etcd, "--experimental-bootstrap-defrag-threshold-megabytes", "1000"}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = e2e.WaitReadyExpectProc(context.TODO(), proc, []string{"Skipping defragmentation"}); err != nil {
-		t.Fatal(err)
-	}
-	if err = proc.Stop(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.NoError(t, e2e.WaitReadyExpectProc(context.TODO(), proc, []string{"Skipping defragmentation"}))
+	require.NoError(t, proc.Stop())
 
 	// wait for the process to exit, otherwise test will have leaked goroutine
 	if err := proc.Close(); err != nil {
@@ -409,14 +617,11 @@ func TestEtcdHealthyWithTinySnapshotCatchupEntries(t *testing.T) {
 	defer cancel()
 	g, ctx := errgroup.WithContext(ctx)
 	for i := 0; i < 10; i++ {
-		clientId := i
+		clientID := i
 		g.Go(func() error {
-			cc, err := e2e.NewEtcdctl(epc.Cfg.Client, epc.EndpointsV3())
-			if err != nil {
-				return err
-			}
+			cc := epc.Etcdctl()
 			for j := 0; j < 100; j++ {
-				if err = cc.Put(ctx, "foo", fmt.Sprintf("bar%d", clientId), config.PutOptions{}); err != nil {
+				if err := cc.Put(ctx, "foo", fmt.Sprintf("bar%d", clientID), config.PutOptions{}); err != nil {
 					return err
 				}
 			}
@@ -450,7 +655,83 @@ func TestEtcdTLSVersion(t *testing.T) {
 		}, nil,
 	)
 	assert.NoError(t, err)
-	assert.NoError(t, e2e.WaitReadyExpectProc(context.TODO(), proc, e2e.EtcdServerReadyLines), "did not receive expected output from etcd process")
+	assert.NoErrorf(t, e2e.WaitReadyExpectProc(context.TODO(), proc, e2e.EtcdServerReadyLines), "did not receive expected output from etcd process")
 	assert.NoError(t, proc.Stop())
 
+	proc.Wait() // ensure the port has been released
+	proc.Close()
+}
+
+// TestEtcdDeprecatedFlags checks that etcd will print warning messages if deprecated flags are set.
+func TestEtcdDeprecatedFlags(t *testing.T) {
+	e2e.SkipInShortMode(t)
+
+	commonArgs := []string{
+		e2e.BinPath.Etcd,
+		"--name", "e1",
+	}
+
+	testCases := []struct {
+		name        string
+		args        []string
+		expectedMsg string
+	}{
+		{
+			name:        "snapshot-count",
+			args:        append(commonArgs, "--snapshot-count=100"),
+			expectedMsg: "--snapshot-count is deprecated in 3.6 and will be decommissioned in 3.7",
+		},
+		{
+			name:        "max-snapshots",
+			args:        append(commonArgs, "--max-snapshots=10"),
+			expectedMsg: "--max-snapshots is deprecated in 3.6 and will be decommissioned in 3.7",
+		},
+		{
+			name:        "v2-deprecation",
+			args:        append(commonArgs, "--v2-deprecation", "write-only-drop-data"),
+			expectedMsg: "--v2-deprecation is deprecated and scheduled for removal in v3.8. The default value is enforced, ignoring user input",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			proc, err := e2e.SpawnCmd(
+				tc.args, nil,
+			)
+			require.NoError(t, err)
+			require.NoError(t, e2e.WaitReadyExpectProc(context.TODO(), proc, []string{tc.expectedMsg}))
+			require.NoError(t, proc.Stop())
+
+			proc.Wait() // ensure the port has been released
+			proc.Close()
+		})
+	}
+}
+
+// TestV2DeprecationEnforceDefaultValue verifies that etcd enforces the default V2Deprecation level
+// and ignores users input.
+func TestV2DeprecationEnforceDefaultValue(t *testing.T) {
+	e2e.SkipInShortMode(t)
+
+	commonArgs := []string{
+		e2e.BinPath.Etcd,
+		"--name", "e1",
+	}
+
+	validV2DeprecationLevels := []string{"write-only", "write-only-drop-data", "gone"}
+	expectedDeprecationLevelMsg := `"v2-deprecation":"write-only"`
+
+	for _, optionLevel := range validV2DeprecationLevels {
+		t.Run(optionLevel, func(t *testing.T) {
+			proc, err := e2e.SpawnCmd(
+				append(commonArgs, "--v2-deprecation", optionLevel), nil,
+			)
+			require.NoError(t, err)
+			require.NoError(t, e2e.WaitReadyExpectProc(context.TODO(), proc, []string{expectedDeprecationLevelMsg}))
+			require.NoError(t, proc.Stop())
+
+			proc.Wait() // ensure the port has been released
+			proc.Close()
+		})
+	}
 }
